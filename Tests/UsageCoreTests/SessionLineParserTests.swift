@@ -131,6 +131,27 @@ final class SessionLineParserTests: XCTestCase {
         }
     }
 
+    func testRejectsEachNegativeTotalUsageCounter() {
+        let fields = [
+            "input_tokens",
+            "cached_input_tokens",
+            "output_tokens"
+        ]
+
+        for field in fields {
+            let line = tokenEventLine(
+                usageKey: "total_token_usage",
+                overriding: field,
+                with: -1
+            )
+
+            XCTAssertThrowsError(try SessionLineParser().parse(line: line)) {
+                error in
+                XCTAssertEqual(error as? SessionParseError, .invalidTokenEvent)
+            }
+        }
+    }
+
     private func tokenEventLine(
         usageKey: String,
         overriding field: String,

@@ -13,14 +13,21 @@ public struct SessionUsageAccumulator: Sendable {
     public mutating func ingest(
         _ record: SessionTokenRecord
     ) throws -> SessionTokenEvent? {
-        let usage: TokenBreakdown
-        if let lastUsage = record.lastUsage {
-            usage = lastUsage
-        } else if let totalUsage = record.totalUsage {
-            usage = try delta(
+        let totalDelta: TokenBreakdown?
+        if let totalUsage = record.totalUsage {
+            totalDelta = try delta(
                 current: totalUsage,
                 previous: state.previousTotal
             )
+        } else {
+            totalDelta = nil
+        }
+
+        let usage: TokenBreakdown
+        if let lastUsage = record.lastUsage {
+            usage = lastUsage
+        } else if let totalDelta {
+            usage = totalDelta
         } else {
             return nil
         }

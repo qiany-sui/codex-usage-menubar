@@ -77,16 +77,71 @@ final class SessionUsageAccumulatorTests: XCTestCase {
         XCTAssertEqual(accumulator.state.previousTotal, previous.totalUsage)
     }
 
-    func testSingleTotalCounterRollbackStartsNewSegment() throws {
+    func testRejectsInvalidTotalTransitionWhenLastUsageIsPresent() throws {
         var accumulator = SessionUsageAccumulator()
-        let previous = totalRecord(input: 100, cached: 40, output: 20)
-        let current = totalRecord(input: 120, cached: 30, output: 30)
+        let previous = totalRecord(input: 100, cached: 0, output: 0)
+        let record = SessionTokenRecord(
+            occurredAt: previous.occurredAt.addingTimeInterval(1),
+            lastUsage: TokenBreakdown(
+                inputTokens: 1,
+                cachedInputTokens: 0,
+                outputTokens: 1
+            ),
+            totalUsage: TokenBreakdown(
+                inputTokens: 110,
+                cachedInputTokens: 110,
+                outputTokens: 0
+            ),
+            schemaVariant: "last+total"
+        )
 
         _ = try accumulator.ingest(previous)
-        let event = try XCTUnwrap(accumulator.ingest(current))
 
-        XCTAssertEqual(event.usage, current.totalUsage)
-        XCTAssertEqual(accumulator.state.previousTotal, current.totalUsage)
+        XCTAssertThrowsError(try accumulator.ingest(record)) { error in
+            XCTAssertEqual(
+                error as? SessionUsageAccumulatorError,
+                .invalidTotalTransition
+            )
+        }
+        XCTAssertEqual(accumulator.state.previousTotal, previous.totalUsage)
+    }
+
+    func testEachSingleTotalCounterRollbackStartsNewSegment() throws {
+        let cases: [(name: String, previous: SessionTokenRecord, current: SessionTokenRecord)] = [
+            (
+                "input",
+                totalRecord(input: 100, cached: 40, output: 20),
+                totalRecord(input: 90, cached: 50, output: 30)
+            ),
+            (
+                "cached",
+                totalRecord(input: 100, cached: 40, output: 20),
+                totalRecord(input: 120, cached: 30, output: 30)
+            ),
+            (
+                "output",
+                totalRecord(input: 100, cached: 40, output: 20),
+                totalRecord(input: 120, cached: 50, output: 10)
+            )
+        ]
+
+        for testCase in cases {
+            var accumulator = SessionUsageAccumulator()
+            _ = try accumulator.ingest(testCase.previous)
+
+            let event = try XCTUnwrap(accumulator.ingest(testCase.current))
+
+            XCTAssertEqual(
+                event.usage,
+                testCase.current.totalUsage,
+                "\\(testCase.name) rollback should start a new segment"
+            )
+            XCTAssertEqual(
+                accumulator.state.previousTotal,
+                testCase.current.totalUsage,
+                "\\(testCase.name) rollback should advance state"
+            )
+        }
     }
 
     func testAnonymousSignatureChangesForEveryAllowedInputField() throws {
