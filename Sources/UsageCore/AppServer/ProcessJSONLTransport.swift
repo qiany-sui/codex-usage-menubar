@@ -3,6 +3,7 @@ import Foundation
 public enum ProcessJSONLTransportError: Error, Equatable, Sendable {
     case notStarted
     case processExited(Int32)
+    case stdoutClosed
     case writeFailed
 }
 
@@ -14,7 +15,6 @@ private final class ProcessOutputLifecycle: @unchecked Sendable {
     private var framer = JSONLLineFramer()
     private var exitStatus: Int32?
     private var didReachEOF = false
-    private var pendingEOFCompletion: DispatchWorkItem?
     private var isFinished = false
 
     init() {
@@ -35,7 +35,7 @@ private final class ProcessOutputLifecycle: @unchecked Sendable {
         lock.unlock()
     }
 
-    func stdoutDidClose() {
+    func stdoutDidClose(processExitStatus: Int32?) {
         lock.lock()
         guard !isFinished else {
             lock.unlock()
@@ -43,17 +43,10 @@ private final class ProcessOutputLifecycle: @unchecked Sendable {
         }
         didReachEOF = true
         framer.finish()
-        if let exitStatus {
+        if let exitStatus = exitStatus ?? processExitStatus {
             finishLocked(exitStatus == 0 ? nil : .processExited(exitStatus))
         } else {
-            let completion = DispatchWorkItem { [weak self] in
-                self?.finishAfterEOFGracePeriod()
-            }
-            pendingEOFCompletion = completion
-            DispatchQueue.global().asyncAfter(
-                deadline: .now() + .milliseconds(100),
-                execute: completion
-            )
+            finishLocked(.stdoutClosed)
         }
         lock.unlock()
     }
@@ -66,8 +59,6 @@ private final class ProcessOutputLifecycle: @unchecked Sendable {
         }
         exitStatus = status
         if didReachEOF {
-            pendingEOFCompletion?.cancel()
-            pendingEOFCompletion = nil
             finishLocked(status == 0 ? nil : .processExited(status))
         }
         lock.unlock()
@@ -88,8 +79,6 @@ private final class ProcessOutputLifecycle: @unchecked Sendable {
     private func finishLocked(_ error: ProcessJSONLTransportError?) {
         guard !isFinished else { return }
         isFinished = true
-        pendingEOFCompletion?.cancel()
-        pendingEOFCompletion = nil
         framer.finish()
         if let error {
             continuation.finish(throwing: error)
@@ -101,18 +90,8 @@ private final class ProcessOutputLifecycle: @unchecked Sendable {
     private func finishLocked(_ error: Error) {
         guard !isFinished else { return }
         isFinished = true
-        pendingEOFCompletion?.cancel()
-        pendingEOFCompletion = nil
         framer.finish()
         continuation.finish(throwing: error)
-    }
-
-    private func finishAfterEOFGracePeriod() {
-        lock.lock()
-        if didReachEOF, exitStatus == nil {
-            finishLocked(nil)
-        }
-        lock.unlock()
     }
 }
 
@@ -199,11 +178,22 @@ public actor ProcessJSONLTransport: AppServerTransport {
         process.standardError = FileHandle.nullDevice
 
         let outputLifecycle = outputLifecycle
-        outputPipe.fileHandleForReading.readabilityHandler = { handle in
+        outputPipe.fileHandleForReading.readabilityHandler = { [weak process] handle in
             let data = handle.availableData
             if data.isEmpty {
                 handle.readabilityHandler = nil
-                outputLifecycle.stdoutDidClose()
+                let processExitStatus: Int32?
+                if let process, !process.isRunning {
+                    processExitStatus = process.terminationStatus
+                } else {
+                    processExitStatus = nil
+                }
+                outputLifecycle.stdoutDidClose(
+                    processExitStatus: processExitStatus
+                )
+                if processExitStatus == nil, process?.isRunning == true {
+                    process?.terminate()
+                }
             } else {
                 outputLifecycle.receive(data)
             }

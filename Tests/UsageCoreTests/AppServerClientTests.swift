@@ -289,18 +289,36 @@ final class AppServerClientTests: XCTestCase {
         XCTAssertNil(eof)
     }
 
-    func testProcessFinishesAtStdoutEOFBeforeProcessExit() async throws {
+    func testProcessReportsErrorWhenStdoutClosesBeforeProcessExit() async throws {
         let transport = try processTransport(mode: "stdout-eof")
-        let clock = ContinuousClock()
 
         try await transport.start()
-        let startedAt = clock.now
-        let eof = try await transport.nextLine()
-        let elapsed = startedAt.duration(to: clock.now)
+        await XCTAssertThrowsErrorAsync(
+            try await transport.nextLine()
+        ) { error in
+            XCTAssertEqual(
+                error as? ProcessJSONLTransportError,
+                .stdoutClosed
+            )
+        }
         await transport.stop()
+    }
 
-        XCTAssertNil(eof)
-        XCTAssertLessThan(elapsed, .seconds(1))
+    func testProcessDoesNotTreatDelayedNonzeroExitAsNormalEOF() async throws {
+        let transport = try processTransport(
+            mode: "delayed-nonzero-after-stdout-eof"
+        )
+
+        try await transport.start()
+        await XCTAssertThrowsErrorAsync(
+            try await transport.nextLine()
+        ) { error in
+            XCTAssertEqual(
+                error as? ProcessJSONLTransportError,
+                .stdoutClosed
+            )
+        }
+        await transport.stop()
     }
 
     func testProcessDeliversFinalLineThenReportsNonzeroExit() async throws {

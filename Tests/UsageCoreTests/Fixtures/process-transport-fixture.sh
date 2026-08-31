@@ -1,14 +1,20 @@
 #!/bin/bash
 case "$1" in
   response-exit)
-    printf '%s\n' 'response'
+    (sleep 0.05; printf '%s\n' 'response') &
+    exit 0
     ;;
   stdout-eof)
     exec 1>&-
     sleep 2
     ;;
+  delayed-nonzero-after-stdout-eof)
+    exec 1>&-
+    sleep 1
+    exit 7
+    ;;
   nonzero-exit)
-    printf '%s\n' 'response'
+    (sleep 0.05; printf '%s\n' 'response') &
     exit 7
     ;;
   start-marker)
