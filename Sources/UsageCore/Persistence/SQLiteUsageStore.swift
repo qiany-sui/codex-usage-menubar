@@ -73,7 +73,9 @@ public actor SQLiteUsageStore: UsageStore {
     }
 
     public func insert(events: [StoredUsageEvent]) throws -> Int {
-        try validateEvents(events)
+        guard events.allSatisfy(isValidEvent) else {
+            throw validationFailure(operation: "validate event")
+        }
         return try connection.transaction {
             let statement = try connection.prepare(
                 """
@@ -103,6 +105,9 @@ public actor SQLiteUsageStore: UsageStore {
     }
 
     public func events(from: Date, to: Date) throws -> [StoredUsageEvent] {
+        guard isFinite(from), isFinite(to) else {
+            throw validationFailure(operation: "validate event query")
+        }
         let statement = try connection.prepare(
             """
             SELECT signature, occurred_at, local_day, input_tokens,
@@ -117,18 +122,23 @@ public actor SQLiteUsageStore: UsageStore {
         try statement.bind(to.timeIntervalSince1970, at: 2)
         var events: [StoredUsageEvent] = []
         while try statement.step() == .row {
-            events.append(
-                StoredUsageEvent(
-                    signature: try statement.data(at: 0),
-                    occurredAt: Date(timeIntervalSince1970: try statement.double(at: 1)),
-                    localDay: try localDay(from: statement.string(at: 2)),
-                    usage: TokenBreakdown(
-                        inputTokens: try statement.int64(at: 3),
-                        cachedInputTokens: try statement.int64(at: 4),
-                        outputTokens: try statement.int64(at: 5)
-                    )
+            let event = StoredUsageEvent(
+                signature: try statement.data(at: 0),
+                occurredAt: Date(timeIntervalSince1970: try statement.double(at: 1)),
+                localDay: try localDay(
+                    from: statement.string(at: 2),
+                    operation: "read events"
+                ),
+                usage: TokenBreakdown(
+                    inputTokens: try statement.int64(at: 3),
+                    cachedInputTokens: try statement.int64(at: 4),
+                    outputTokens: try statement.int64(at: 5)
                 )
             )
+            guard isValidEvent(event) else {
+                throw corruption(operation: "read events")
+            }
+            events.append(event)
         }
         return events
     }
@@ -162,18 +172,21 @@ public actor SQLiteUsageStore: UsageStore {
         default:
             throw corruption(operation: "read cursor")
         }
-        return FileCursor(
+        let cursor = FileCursor(
             pathHash: pathHash,
             deviceID: try statement.int64(at: 0),
             inode: try statement.int64(at: 1),
             committedOffset: try statement.int64(at: 2),
             counterState: SessionCounterState(previousTotal: previousTotal)
         )
+        guard isValidCursor(cursor) else {
+            throw corruption(operation: "read cursor")
+        }
+        return cursor
     }
 
     public func save(cursor: FileCursor) throws {
-        if let total = cursor.counterState.previousTotal,
-           !isValid(total) {
+        guard isValidCursor(cursor) else {
             throw validationFailure(operation: "validate cursor")
         }
         let statement = try connection.prepare(
@@ -212,7 +225,7 @@ public actor SQLiteUsageStore: UsageStore {
     }
 
     public func upsert(officialDays: [OfficialUsageDay]) throws {
-        guard officialDays.allSatisfy({ $0.tokens >= 0 }) else {
+        guard officialDays.allSatisfy(isValidOfficialDay) else {
             throw validationFailure(operation: "validate official day")
         }
         try connection.transaction {
@@ -248,18 +261,26 @@ public actor SQLiteUsageStore: UsageStore {
         )
         var days: [OfficialUsageDay] = []
         while try statement.step() == .row {
-            days.append(
-                OfficialUsageDay(
-                    day: try localDay(from: statement.string(at: 0)),
-                    tokens: try statement.int64(at: 1),
-                    fetchedAt: Date(timeIntervalSince1970: try statement.double(at: 2))
-                )
+            let day = OfficialUsageDay(
+                day: try localDay(
+                    from: statement.string(at: 0),
+                    operation: "read official days"
+                ),
+                tokens: try statement.int64(at: 1),
+                fetchedAt: Date(timeIntervalSince1970: try statement.double(at: 2))
             )
+            guard isValidOfficialDay(day) else {
+                throw corruption(operation: "read official days")
+            }
+            days.append(day)
         }
         return days
     }
 
     public func save(quota: QuotaSnapshot) throws {
+        guard isValidQuota(quota) else {
+            throw validationFailure(operation: "validate quota")
+        }
         let statement = try connection.prepare(
             """
             INSERT INTO quota_snapshots (
@@ -301,7 +322,7 @@ public actor SQLiteUsageStore: UsageStore {
         guard let duration = Int(exactly: try statement.int64(at: 2)) else {
             throw corruption(operation: "read quota")
         }
-        return QuotaSnapshot(
+        let quota = QuotaSnapshot(
             limitID: try statement.string(at: 0),
             usedPercent: try statement.double(at: 1),
             windowDurationMinutes: duration,
@@ -309,15 +330,17 @@ public actor SQLiteUsageStore: UsageStore {
             resetsAt: Date(timeIntervalSince1970: try statement.double(at: 4)),
             fetchedAt: Date(timeIntervalSince1970: try statement.double(at: 5))
         )
+        guard isValidQuota(quota) else {
+            throw corruption(operation: "read quota")
+        }
+        return quota
     }
 
     public func replace(cycles: [QuotaCycle]) throws {
         guard cycles.count <= 9 else {
             throw SQLiteStoreError.tooManyCycles(cycles.count)
         }
-        guard cycles.allSatisfy({
-            isValid($0.usage) && $0.displayedTokens >= 0 && $0.endsAt >= $0.startsAt
-        }) else {
+        guard cycles.allSatisfy(isValidCycle) else {
             throw validationFailure(operation: "validate cycle")
         }
         try connection.transaction {
@@ -370,20 +393,22 @@ public actor SQLiteUsageStore: UsageStore {
             ) else {
                 throw corruption(operation: "read cycles")
             }
-            cycles.append(
-                QuotaCycle(
-                    startsAt: Date(timeIntervalSince1970: try statement.double(at: 0)),
-                    endsAt: Date(timeIntervalSince1970: try statement.double(at: 1)),
-                    usage: TokenBreakdown(
-                        inputTokens: try statement.int64(at: 2),
-                        cachedInputTokens: try statement.int64(at: 3),
-                        outputTokens: try statement.int64(at: 4)
-                    ),
-                    displayedTokens: try statement.int64(at: 5),
-                    status: status,
-                    boundaryIsEstimated: try statement.int64(at: 7) != 0
-                )
+            let cycle = QuotaCycle(
+                startsAt: Date(timeIntervalSince1970: try statement.double(at: 0)),
+                endsAt: Date(timeIntervalSince1970: try statement.double(at: 1)),
+                usage: TokenBreakdown(
+                    inputTokens: try statement.int64(at: 2),
+                    cachedInputTokens: try statement.int64(at: 3),
+                    outputTokens: try statement.int64(at: 4)
+                ),
+                displayedTokens: try statement.int64(at: 5),
+                status: status,
+                boundaryIsEstimated: try statement.int64(at: 7) != 0
             )
+            guard isValidCycle(cycle) else {
+                throw corruption(operation: "read cycles")
+            }
+            cycles.append(cycle)
         }
         return cycles
     }
@@ -392,6 +417,9 @@ public actor SQLiteUsageStore: UsageStore {
         eventsBefore: Date,
         officialDaysBefore: LocalDay
     ) throws {
+        guard isFinite(eventsBefore), isCanonical(officialDaysBefore) else {
+            throw validationFailure(operation: "validate prune cutoff")
+        }
         try connection.transaction {
             let events = try connection.prepare(
                 "DELETE FROM usage_events WHERE occurred_at < ?;",
@@ -413,10 +441,40 @@ public actor SQLiteUsageStore: UsageStore {
         }
     }
 
-    private func validateEvents(_ events: [StoredUsageEvent]) throws {
-        guard events.allSatisfy({ isValid($0.usage) }) else {
-            throw validationFailure(operation: "validate event")
+    private func isValidEvent(_ event: StoredUsageEvent) -> Bool {
+        isFinite(event.occurredAt)
+            && isCanonical(event.localDay)
+            && isValid(event.usage)
+    }
+
+    private func isValidCursor(_ cursor: FileCursor) -> Bool {
+        guard cursor.committedOffset >= 0 else {
+            return false
         }
+        return cursor.counterState.previousTotal.map(isValid) ?? true
+    }
+
+    private func isValidOfficialDay(_ day: OfficialUsageDay) -> Bool {
+        day.tokens >= 0
+            && isFinite(day.fetchedAt)
+            && isCanonical(day.day)
+    }
+
+    private func isValidQuota(_ quota: QuotaSnapshot) -> Bool {
+        quota.usedPercent.isFinite
+            && quota.usedPercent >= 0
+            && quota.windowDurationMinutes > 0
+            && isFinite(quota.startsAt)
+            && isFinite(quota.resetsAt)
+            && isFinite(quota.fetchedAt)
+    }
+
+    private func isValidCycle(_ cycle: QuotaCycle) -> Bool {
+        isFinite(cycle.startsAt)
+            && isFinite(cycle.endsAt)
+            && isValid(cycle.usage)
+            && cycle.displayedTokens >= 0
+            && cycle.endsAt >= cycle.startsAt
     }
 
     private func isValid(_ usage: TokenBreakdown) -> Bool {
@@ -426,7 +484,36 @@ public actor SQLiteUsageStore: UsageStore {
             && usage.cachedInputTokens <= usage.inputTokens
     }
 
-    private func localDay(from text: String) throws -> LocalDay {
+    private func isFinite(_ date: Date) -> Bool {
+        date.timeIntervalSince1970.isFinite
+    }
+
+    private func isCanonical(_ day: LocalDay) -> Bool {
+        guard (1...9_999).contains(day.year) else {
+            return false
+        }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        var components = DateComponents()
+        components.calendar = calendar
+        components.timeZone = calendar.timeZone
+        components.year = day.year
+        components.month = day.month
+        components.day = day.day
+        guard let date = calendar.date(from: components) else {
+            return false
+        }
+        let normalized = calendar.dateComponents(
+            [.year, .month, .day],
+            from: date
+        )
+        return normalized.year == day.year
+            && normalized.month == day.month
+            && normalized.day == day.day
+            && day.iso8601.utf8.count == 10
+    }
+
+    private func localDay(from text: String, operation: String) throws -> LocalDay {
         let parts = text.split(separator: "-", omittingEmptySubsequences: false)
         guard parts.count == 3,
               parts[0].count == 4,
@@ -435,9 +522,13 @@ public actor SQLiteUsageStore: UsageStore {
               let year = Int(parts[0]),
               let month = Int(parts[1]),
               let day = Int(parts[2]) else {
-            throw corruption(operation: "decode local day")
+            throw corruption(operation: operation)
         }
-        return LocalDay(year: year, month: month, day: day)
+        let value = LocalDay(year: year, month: month, day: day)
+        guard isCanonical(value), value.iso8601 == text else {
+            throw corruption(operation: operation)
+        }
+        return value
     }
 
     private func validationFailure(operation: String) -> SQLiteStoreError {

@@ -133,12 +133,20 @@ final class SQLiteStatement {
 
     func bind(_ value: String, at index: Int32) throws {
         let statement = try pointer()
-        let result = value.withCString { bytes in
+        let bytes = value.utf8CString
+        let byteCount = bytes.count - 1
+        guard byteCount <= Int(Int32.max) else {
+            throw SQLiteStoreError.operationFailed(
+                operation: "\(operation): bind text",
+                code: SQLITE_TOOBIG
+            )
+        }
+        let result = bytes.withUnsafeBufferPointer { buffer in
             sqlite3_bind_text(
                 statement,
                 index,
-                bytes,
-                -1,
+                buffer.baseAddress,
+                Int32(byteCount),
                 unsafeBitCast(-1, to: sqlite3_destructor_type.self)
             )
         }
@@ -203,10 +211,22 @@ final class SQLiteStatement {
     }
 
     func string(at column: Int32) throws -> String {
-        guard let bytes = sqlite3_column_text(try pointer(), column) else {
-            throw failure(suffix: "read text")
+        let statement = try pointer()
+        guard sqlite3_column_type(statement, column) != SQLITE_NULL else {
+            throw corruption(suffix: "read text")
         }
-        return String(cString: UnsafeRawPointer(bytes).assumingMemoryBound(to: CChar.self))
+        guard let bytes = sqlite3_column_text(statement, column) else {
+            throw corruption(suffix: "read text")
+        }
+        let count = Int(sqlite3_column_bytes(statement, column))
+        if count == 0 {
+            return ""
+        }
+        let buffer = UnsafeBufferPointer(start: bytes, count: count)
+        guard let value = String(bytes: buffer, encoding: .utf8) else {
+            throw corruption(suffix: "read text")
+        }
+        return value
     }
 
     func data(at column: Int32) throws -> Data {
@@ -238,6 +258,13 @@ final class SQLiteStatement {
         SQLiteStoreError.operationFailed(
             operation: "\(operation): \(suffix)",
             code: sqlite3_extended_errcode(database)
+        )
+    }
+
+    private func corruption(suffix: String) -> SQLiteStoreError {
+        SQLiteStoreError.operationFailed(
+            operation: "\(operation): \(suffix)",
+            code: SQLITE_CORRUPT
         )
     }
 }
