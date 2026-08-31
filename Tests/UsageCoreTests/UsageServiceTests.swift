@@ -6,8 +6,13 @@ actor FakeAccountUsageClient: AccountUsageReading {
     let initialized: InitializeResult
     private var limits: RateLimitsResponse
     private var usage: AccountUsageResponse
-    private var failure: RPCErrorPayload?
+    private var rateLimitsFailure: (any Error & Sendable)?
+    private var usageFailure: (any Error & Sendable)?
     private var queuedNotifications: [AppServerNotification] = []
+    private var initializeCallCount = 0
+    private var rateLimitsCallCount = 0
+    private var usageCallCount = 0
+    private var notificationCallCount = 0
 
     init(
         initialized: InitializeResult,
@@ -20,26 +25,47 @@ actor FakeAccountUsageClient: AccountUsageReading {
     }
 
     func initialize() async throws -> InitializeResult {
-        initialized
+        initializeCallCount += 1
+        return initialized
     }
 
     func readRateLimits() async throws -> RateLimitsResponse {
-        if let failure { throw failure }
+        rateLimitsCallCount += 1
+        if let rateLimitsFailure { throw rateLimitsFailure }
         return limits
     }
 
     func readAccountUsage() async throws -> AccountUsageResponse {
-        if let failure { throw failure }
+        usageCallCount += 1
+        if let usageFailure { throw usageFailure }
         return usage
     }
 
     func nextNotification() async -> AppServerNotification? {
+        notificationCallCount += 1
         guard !queuedNotifications.isEmpty else { return nil }
         return queuedNotifications.removeFirst()
     }
 
     func setFailure(_ value: RPCErrorPayload?) {
-        failure = value
+        rateLimitsFailure = value
+        usageFailure = value
+    }
+
+    func setRateLimitsFailure(_ value: RPCErrorPayload?) {
+        rateLimitsFailure = value
+    }
+
+    func setUsageFailure(_ value: RPCErrorPayload?) {
+        usageFailure = value
+    }
+
+    func setRateLimitsError(_ value: (any Error & Sendable)?) {
+        rateLimitsFailure = value
+    }
+
+    func setUsageError(_ value: (any Error & Sendable)?) {
+        usageFailure = value
     }
 
     func setLimits(_ value: RateLimitsResponse) {
@@ -53,6 +79,166 @@ actor FakeAccountUsageClient: AccountUsageReading {
     func enqueue(_ value: AppServerNotification) {
         queuedNotifications.append(value)
     }
+
+    func callCounts() -> (initialize: Int, limits: Int, usage: Int, notification: Int) {
+        (
+            initializeCallCount,
+            rateLimitsCallCount,
+            usageCallCount,
+            notificationCallCount
+        )
+    }
+}
+
+actor CountingSessionIndexer: SessionUsageIndexing {
+    private var callCount = 0
+
+    func index(
+        codexHome: URL,
+        modifiedSince: Date,
+        calendar: Calendar
+    ) async throws -> SessionIndexResult {
+        callCount += 1
+        return SessionIndexResult(scannedFileCount: 0, insertedEventCount: 0)
+    }
+
+    func calls() -> Int { callCount }
+}
+
+private enum TestIndexerFailure: Error {
+    case unavailable
+}
+
+actor FailingSessionIndexer: SessionUsageIndexing {
+    func index(
+        codexHome: URL,
+        modifiedSince: Date,
+        calendar: Calendar
+    ) async throws -> SessionIndexResult {
+        throw TestIndexerFailure.unavailable
+    }
+}
+
+actor RecordingSessionIndexer: SessionUsageIndexing {
+    private var recordedModifiedSince: Date?
+
+    func index(
+        codexHome: URL,
+        modifiedSince: Date,
+        calendar: Calendar
+    ) async throws -> SessionIndexResult {
+        recordedModifiedSince = modifiedSince
+        return SessionIndexResult(scannedFileCount: 0, insertedEventCount: 0)
+    }
+
+    func modifiedSince() -> Date? { recordedModifiedSince }
+}
+
+actor InitializationGateAccountClient: AccountUsageReading {
+    private let initialized: InitializeResult
+    private let limits: RateLimitsResponse
+    private let usage: AccountUsageResponse
+    private var initializeCalls = 0
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var gateWaiters: [CheckedContinuation<Void, Never>] = []
+    private var gateIsOpen = false
+
+    init(
+        initialized: InitializeResult,
+        limits: RateLimitsResponse,
+        usage: AccountUsageResponse
+    ) {
+        self.initialized = initialized
+        self.limits = limits
+        self.usage = usage
+    }
+
+    func initialize() async throws -> InitializeResult {
+        initializeCalls += 1
+        let waiters = startWaiters
+        startWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+        if !gateIsOpen {
+            await withCheckedContinuation { gateWaiters.append($0) }
+        }
+        return initialized
+    }
+
+    func readRateLimits() async throws -> RateLimitsResponse { limits }
+    func readAccountUsage() async throws -> AccountUsageResponse { usage }
+    func nextNotification() async -> AppServerNotification? { nil }
+
+    func waitUntilInitializationStarts() async {
+        guard initializeCalls == 0 else { return }
+        await withCheckedContinuation { startWaiters.append($0) }
+    }
+
+    func openInitializationGate() {
+        gateIsOpen = true
+        let waiters = gateWaiters
+        gateWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+    }
+
+    func initializationCount() -> Int { initializeCalls }
+}
+
+actor NotificationGateAccountClient: AccountUsageReading {
+    private let initialized: InitializeResult
+    private var limits: RateLimitsResponse
+    private let usage: AccountUsageResponse
+    private var notifications: [AppServerNotification] = []
+    private var shouldBlockFirstNotification = false
+    private var notificationCalls = 0
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var gateWaiters: [CheckedContinuation<Void, Never>] = []
+
+    init(
+        initialized: InitializeResult,
+        limits: RateLimitsResponse,
+        usage: AccountUsageResponse
+    ) {
+        self.initialized = initialized
+        self.limits = limits
+        self.usage = usage
+    }
+
+    func initialize() async throws -> InitializeResult { initialized }
+    func readRateLimits() async throws -> RateLimitsResponse { limits }
+    func readAccountUsage() async throws -> AccountUsageResponse { usage }
+
+    func nextNotification() async -> AppServerNotification? {
+        notificationCalls += 1
+        guard !notifications.isEmpty else { return nil }
+        let notification = notifications.removeFirst()
+        let waiters = startWaiters
+        startWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+        if shouldBlockFirstNotification, notificationCalls == 1 {
+            await withCheckedContinuation { gateWaiters.append($0) }
+        }
+        return notification
+    }
+
+    func prepareBlockedNotifications(_ values: [AppServerNotification]) {
+        notifications = values
+        notificationCalls = 0
+        shouldBlockFirstNotification = true
+    }
+
+    func waitUntilNotificationStarts() async {
+        guard notificationCalls == 0 else { return }
+        await withCheckedContinuation { startWaiters.append($0) }
+    }
+
+    func releaseFirstNotification() {
+        shouldBlockFirstNotification = false
+        let waiters = gateWaiters
+        gateWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+    }
+
+    func notificationCount() -> Int { notificationCalls }
 }
 
 struct ServiceFixture {
@@ -87,21 +273,7 @@ struct ServiceFixture {
                 userAgent: "test"
             ),
             limits: Self.fullLimits,
-            usage: AccountUsageResponse(
-                summary: AccountUsageSummary(
-                    lifetimeTokens: 1_234,
-                    peakDailyTokens: 500,
-                    longestRunningTurnSec: 30,
-                    currentStreakDays: 2,
-                    longestStreakDays: 4
-                ),
-                dailyUsageBuckets: [
-                    AccountTokenUsageDailyBucket(
-                        startDate: "2026-08-30",
-                        tokens: 400
-                    )
-                ]
-            )
+            usage: Self.fullUsage
         )
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -134,10 +306,178 @@ struct ServiceFixture {
         ),
         rateLimitsByLimitId: nil
     )
+
+    static let fullUsage = AccountUsageResponse(
+        summary: AccountUsageSummary(
+            lifetimeTokens: 1_234,
+            peakDailyTokens: 500,
+            longestRunningTurnSec: 30,
+            currentStreakDays: 2,
+            longestStreakDays: 4
+        ),
+        dailyUsageBuckets: [
+            AccountTokenUsageDailyBucket(
+                startDate: "2026-08-30",
+                tokens: 400
+            )
+        ]
+    )
 }
 
 final class UsageServiceTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_788_148_800)
+
+    func testConcurrentRefreshesInitializeOnlyOnce() async throws {
+        let baselineNow = now
+        let codexHome = try temporaryCodexHome()
+        let store = try SQLiteUsageStore(databaseURL: try temporaryDatabaseURL())
+        let client = InitializationGateAccountClient(
+            initialized: InitializeResult(
+                codexHome: codexHome.path,
+                platformFamily: "unix",
+                platformOs: "macos",
+                userAgent: "test"
+            ),
+            limits: ServiceFixture.fullLimits,
+            usage: ServiceFixture.fullUsage
+        )
+        let service = makeService(
+            accountClient: client,
+            indexer: SessionUsageIndexer(store: store),
+            store: store,
+            codexHome: codexHome
+        )
+        let first = Task {
+            try await service.refresh(reason: .startup, now: baselineNow)
+        }
+        await client.waitUntilInitializationStarts()
+        let secondLaunched = expectation(description: "second refresh launched")
+        let second = Task {
+            secondLaunched.fulfill()
+            return try await service.refresh(
+                reason: .startup,
+                now: baselineNow.addingTimeInterval(1)
+            )
+        }
+        await fulfillment(of: [secondLaunched], timeout: 1)
+        for _ in 0..<200 { await Task.yield() }
+        let countWhileBlocked = await client.initializationCount()
+
+        XCTAssertEqual(countWhileBlocked, 1)
+
+        await client.openInitializationGate()
+        _ = try await first.value
+        _ = try await second.value
+        let finalCount = await client.initializationCount()
+        XCTAssertEqual(finalCount, 1)
+    }
+
+    func testCancelledQueuedRefreshReleasesNextWaiter() async throws {
+        let baselineNow = now
+        let codexHome = try temporaryCodexHome()
+        let store = try SQLiteUsageStore(databaseURL: try temporaryDatabaseURL())
+        let client = InitializationGateAccountClient(
+            initialized: InitializeResult(
+                codexHome: codexHome.path,
+                platformFamily: "unix",
+                platformOs: "macos",
+                userAgent: "test"
+            ),
+            limits: ServiceFixture.fullLimits,
+            usage: ServiceFixture.fullUsage
+        )
+        let service = makeService(
+            accountClient: client,
+            indexer: SessionUsageIndexer(store: store),
+            store: store,
+            codexHome: codexHome
+        )
+        let first = Task {
+            try await service.refresh(reason: .startup, now: baselineNow)
+        }
+        await client.waitUntilInitializationStarts()
+        let second = Task {
+            try await service.refresh(
+                reason: .manual,
+                now: baselineNow.addingTimeInterval(1)
+            )
+        }
+        second.cancel()
+        let thirdCompleted = expectation(description: "third refresh completes")
+        let third = Task {
+            let snapshot = try await service.refresh(
+                reason: .manual,
+                now: baselineNow.addingTimeInterval(2)
+            )
+            thirdCompleted.fulfill()
+            return snapshot
+        }
+
+        await client.openInitializationGate()
+        _ = try await first.value
+        await XCTAssertThrowsErrorAsync(try await second.value) { error in
+            XCTAssertTrue(error is CancellationError)
+        }
+        await fulfillment(of: [thirdCompleted], timeout: 2)
+        _ = try await third.value
+    }
+
+    func testConcurrentNotificationsMergeInQueueOrder() async throws {
+        let baselineNow = now
+        let codexHome = try temporaryCodexHome()
+        let store = try SQLiteUsageStore(databaseURL: try temporaryDatabaseURL())
+        let client = NotificationGateAccountClient(
+            initialized: InitializeResult(
+                codexHome: codexHome.path,
+                platformFamily: "unix",
+                platformOs: "macos",
+                userAgent: "test"
+            ),
+            limits: ServiceFixture.fullLimits,
+            usage: ServiceFixture.fullUsage
+        )
+        let service = makeService(
+            accountClient: client,
+            indexer: SessionUsageIndexer(store: store),
+            store: store,
+            codexHome: codexHome
+        )
+        _ = try await service.refresh(reason: .startup, now: baselineNow)
+        let firstUpdate = try rateLimitUpdate(usedPercent: 31)
+        let secondUpdate = try rateLimitUpdate(usedPercent: 42)
+        await client.prepareBlockedNotifications([
+            .rateLimitsUpdated(firstUpdate),
+            .rateLimitsUpdated(secondUpdate)
+        ])
+        let first = Task {
+            try await service.processNextAccountNotification(
+                now: baselineNow.addingTimeInterval(1)
+            )
+        }
+        await client.waitUntilNotificationStarts()
+        let secondLaunched = expectation(description: "second notification launched")
+        let second = Task {
+            secondLaunched.fulfill()
+            return try await service.processNextAccountNotification(
+                now: baselineNow.addingTimeInterval(2)
+            )
+        }
+        await fulfillment(of: [secondLaunched], timeout: 1)
+        for _ in 0..<200 { await Task.yield() }
+        let countWhileBlocked = await client.notificationCount()
+
+        XCTAssertEqual(countWhileBlocked, 1)
+
+        await client.releaseFirstNotification()
+        _ = try await first.value
+        _ = try await second.value
+        let snapshot = try await service.currentSnapshot(
+            now: baselineNow.addingTimeInterval(2)
+        )
+        let finalCount = await client.notificationCount()
+        XCTAssertEqual(snapshot.quota?.remainingPercent, 58)
+        XCTAssertEqual(finalCount, 2)
+    }
 
     func testRefreshPersistsRemoteDataIndexesSessionsAndBuildsSnapshot() async throws {
         let fixture = try await ServiceFixture.make()
@@ -168,13 +508,151 @@ final class UsageServiceTests: XCTestCase {
 
         let snapshot = try await fixture.service.refresh(
             reason: .manual,
-            now: now.addingTimeInterval(601)
+            now: now.addingTimeInterval(1)
         )
         let officialDays = try await fixture.store.officialDays()
 
         XCTAssertEqual(snapshot.quota?.remainingPercent, 75)
         XCTAssertEqual(snapshot.status, .stale)
         XCTAssertEqual(officialDays.count, 1)
+    }
+
+    func testQuotaSuccessSurvivesOfficialFailureAndMarksImmediateStale() async throws {
+        let fixture = try await ServiceFixture.make()
+        _ = try await fixture.service.refresh(reason: .startup, now: now)
+        await fixture.accountClient.setLimits(
+            RateLimitsResponse(
+                rateLimits: RateLimitBucket(
+                    limitId: "codex",
+                    limitName: nil,
+                    primary: RateLimitWindow(
+                        usedPercent: 30,
+                        windowDurationMins: 10_080,
+                        resetsAt: 1_788_753_600
+                    ),
+                    secondary: nil
+                ),
+                rateLimitsByLimitId: nil
+            )
+        )
+        await fixture.accountClient.setUsageFailure(rpcFailure())
+
+        let snapshot = try await fixture.service.refresh(
+            reason: .manual,
+            now: now.addingTimeInterval(1)
+        )
+        let days = try await fixture.store.officialDays()
+
+        XCTAssertEqual(snapshot.quota?.remainingPercent, 70)
+        XCTAssertEqual(snapshot.quota?.fetchedAt, now.addingTimeInterval(1))
+        XCTAssertEqual(snapshot.status, .stale)
+        XCTAssertEqual(days.map(\.tokens), [400])
+    }
+
+    func testOfficialSuccessSurvivesQuotaFailureAndMarksImmediateStale() async throws {
+        let fixture = try await ServiceFixture.make()
+        _ = try await fixture.service.refresh(reason: .startup, now: now)
+        await fixture.accountClient.setRateLimitsFailure(rpcFailure())
+        await fixture.accountClient.setUsage(
+            AccountUsageResponse(
+                summary: ServiceFixture.fullUsage.summary,
+                dailyUsageBuckets: [
+                    AccountTokenUsageDailyBucket(
+                        startDate: "2026-08-30",
+                        tokens: 450
+                    )
+                ]
+            )
+        )
+
+        let snapshot = try await fixture.service.refresh(
+            reason: .manual,
+            now: now.addingTimeInterval(1)
+        )
+        let days = try await fixture.store.officialDays()
+
+        XCTAssertEqual(snapshot.quota?.remainingPercent, 75)
+        XCTAssertEqual(snapshot.quota?.fetchedAt, now)
+        XCTAssertEqual(snapshot.status, .stale)
+        XCTAssertEqual(days.map(\.tokens), [450])
+    }
+
+    func testRemoteSQLiteShapedErrorsStillDegradeInsteadOfThrowing() async throws {
+        let quotaFixture = try await ServiceFixture.make()
+        _ = try await quotaFixture.service.refresh(reason: .startup, now: now)
+        await quotaFixture.accountClient.setRateLimitsError(
+            SQLiteStoreError.closed
+        )
+
+        let quotaSnapshot = try await quotaFixture.service.refresh(
+            reason: .manual,
+            now: now.addingTimeInterval(1)
+        )
+
+        XCTAssertEqual(quotaSnapshot.quota?.remainingPercent, 75)
+        XCTAssertEqual(quotaSnapshot.status, .stale)
+
+        let usageFixture = try await ServiceFixture.make()
+        _ = try await usageFixture.service.refresh(reason: .startup, now: now)
+        await usageFixture.accountClient.setUsageError(
+            SQLiteStoreError.closed
+        )
+
+        let usageSnapshot = try await usageFixture.service.refresh(
+            reason: .manual,
+            now: now.addingTimeInterval(1)
+        )
+
+        XCTAssertEqual(usageSnapshot.quota?.remainingPercent, 75)
+        XCTAssertEqual(usageSnapshot.status, .stale)
+    }
+
+    func testNilDailyBucketsKeepStoredDaysAndMarkImmediateStale() async throws {
+        let fixture = try await ServiceFixture.make()
+        _ = try await fixture.service.refresh(reason: .startup, now: now)
+        await fixture.accountClient.setUsage(
+            AccountUsageResponse(
+                summary: ServiceFixture.fullUsage.summary,
+                dailyUsageBuckets: nil
+            )
+        )
+
+        let snapshot = try await fixture.service.refresh(
+            reason: .manual,
+            now: now.addingTimeInterval(1)
+        )
+        let days = try await fixture.store.officialDays()
+
+        XCTAssertEqual(snapshot.status, .stale)
+        XCTAssertEqual(days.map(\.tokens), [400])
+    }
+
+    func testIndexerFailureKeepsRemoteDataAndMarksStale() async throws {
+        let codexHome = try temporaryCodexHome()
+        let store = try SQLiteUsageStore(databaseURL: try temporaryDatabaseURL())
+        let client = FakeAccountUsageClient(
+            initialized: InitializeResult(
+                codexHome: codexHome.path,
+                platformFamily: "unix",
+                platformOs: "macos",
+                userAgent: "test"
+            ),
+            limits: ServiceFixture.fullLimits,
+            usage: ServiceFixture.fullUsage
+        )
+        let service = makeService(
+            accountClient: client,
+            indexer: FailingSessionIndexer(),
+            store: store,
+            codexHome: codexHome
+        )
+
+        let snapshot = try await service.refresh(reason: .startup, now: now)
+        let days = try await store.officialDays()
+
+        XCTAssertEqual(snapshot.quota?.remainingPercent, 75)
+        XCTAssertEqual(snapshot.status, .stale)
+        XCTAssertEqual(days.map(\.tokens), [400])
     }
 
     func testSparseNotificationMergesWithLastFullQuota() async throws {
@@ -194,6 +672,89 @@ final class UsageServiceTests: XCTestCase {
 
         XCTAssertEqual(snapshot?.quota?.remainingPercent, 69)
         XCTAssertEqual(snapshot?.quota?.windowDurationMinutes, 10_080)
+    }
+
+    func testNotificationWithoutFullResponseFallsBackToRead() async throws {
+        let fixture = try await ServiceFixture.make()
+        await fixture.accountClient.enqueue(
+            .rateLimitsUpdated(try rateLimitUpdate(usedPercent: 31))
+        )
+
+        let snapshot = try await fixture.service.processNextAccountNotification(
+            now: now
+        )
+        let counts = await fixture.accountClient.callCounts()
+
+        XCTAssertEqual(snapshot?.quota?.remainingPercent, 75)
+        XCTAssertEqual(counts.initialize, 0)
+        XCTAssertEqual(counts.limits, 1)
+    }
+
+    func testUnselectableNotificationFallsBackToLatestFullRead() async throws {
+        let fixture = try await ServiceFixture.make()
+        _ = try await fixture.service.refresh(reason: .startup, now: now)
+        await fixture.accountClient.setLimits(
+            RateLimitsResponse(
+                rateLimits: RateLimitBucket(
+                    limitId: "codex",
+                    limitName: nil,
+                    primary: RateLimitWindow(
+                        usedPercent: 40,
+                        windowDurationMins: 10_080,
+                        resetsAt: 1_788_753_600
+                    ),
+                    secondary: nil
+                ),
+                rateLimitsByLimitId: nil
+            )
+        )
+        await fixture.accountClient.enqueue(
+            .rateLimitsUpdated(try clearingPrimaryUpdate())
+        )
+
+        let snapshot = try await fixture.service.processNextAccountNotification(
+            now: now.addingTimeInterval(1)
+        )
+
+        XCTAssertEqual(snapshot?.quota?.remainingPercent, 60)
+        XCTAssertNotEqual(snapshot?.status, .stale)
+    }
+
+    func testNotificationFallbackFailureKeepsQuotaAndReturnsStale() async throws {
+        let fixture = try await ServiceFixture.make()
+        _ = try await fixture.service.refresh(reason: .startup, now: now)
+        await fixture.accountClient.setRateLimitsFailure(rpcFailure())
+        await fixture.accountClient.enqueue(
+            .rateLimitsUpdated(try clearingPrimaryUpdate())
+        )
+
+        let snapshot = try await fixture.service.processNextAccountNotification(
+            now: now.addingTimeInterval(1)
+        )
+
+        XCTAssertEqual(snapshot?.quota?.remainingPercent, 75)
+        XCTAssertEqual(snapshot?.status, .stale)
+    }
+
+    func testConsecutiveSparseNotificationsMergeWithLatestFullState() async throws {
+        let fixture = try await ServiceFixture.make()
+        _ = try await fixture.service.refresh(reason: .startup, now: now)
+        await fixture.accountClient.enqueue(
+            .rateLimitsUpdated(try rateLimitUpdate(usedPercent: 31))
+        )
+        await fixture.accountClient.enqueue(
+            .rateLimitsUpdated(try rateLimitUpdate(usedPercent: 42))
+        )
+
+        _ = try await fixture.service.processNextAccountNotification(
+            now: now.addingTimeInterval(1)
+        )
+        let second = try await fixture.service.processNextAccountNotification(
+            now: now.addingTimeInterval(2)
+        )
+
+        XCTAssertEqual(second?.quota?.remainingPercent, 58)
+        XCTAssertEqual(second?.quota?.windowDurationMinutes, 10_080)
     }
 
     func testInvalidOfficialDayIsIgnoredWithoutDeletingStoredDays() async throws {
@@ -223,7 +784,7 @@ final class UsageServiceTests: XCTestCase {
 
         let snapshot = try await fixture.service.refresh(
             reason: .manual,
-            now: now.addingTimeInterval(60)
+            now: now.addingTimeInterval(1)
         )
         let days = try await fixture.store.officialDays()
 
@@ -276,6 +837,39 @@ final class UsageServiceTests: XCTestCase {
         XCTAssertEqual(snapshot.status, .stale)
     }
 
+    func testCurrentSnapshotDoesNotInitializeIndexOrReadNetwork() async throws {
+        let codexHome = try temporaryCodexHome()
+        let store = try SQLiteUsageStore(databaseURL: try temporaryDatabaseURL())
+        let client = FakeAccountUsageClient(
+            initialized: InitializeResult(
+                codexHome: codexHome.path,
+                platformFamily: "unix",
+                platformOs: "macos",
+                userAgent: "test"
+            ),
+            limits: ServiceFixture.fullLimits,
+            usage: ServiceFixture.fullUsage
+        )
+        let indexer = CountingSessionIndexer()
+        let service = makeService(
+            accountClient: client,
+            indexer: indexer,
+            store: store,
+            codexHome: codexHome
+        )
+
+        let snapshot = try await service.currentSnapshot(now: now)
+        let clientCounts = await client.callCounts()
+        let indexCalls = await indexer.calls()
+
+        XCTAssertEqual(snapshot.status, .unavailable)
+        XCTAssertEqual(clientCounts.initialize, 0)
+        XCTAssertEqual(clientCounts.limits, 0)
+        XCTAssertEqual(clientCounts.usage, 0)
+        XCTAssertEqual(clientCounts.notification, 0)
+        XCTAssertEqual(indexCalls, 0)
+    }
+
     func testNineRetainedCyclesPruneOnlyUsageBeforeEarliestCycle() async throws {
         let fixture = try await ServiceFixture.make()
         try await fixture.store.migrate()
@@ -295,6 +889,14 @@ final class UsageServiceTests: XCTestCase {
             )
         }
         try await fixture.store.replace(cycles: cycles)
+        let cursor = FileCursor(
+            pathHash: Data([0x01, 0x02, 0x03]),
+            deviceID: 10,
+            inode: 20,
+            committedOffset: 30,
+            counterState: SessionCounterState(previousTotal: nil)
+        )
+        try await fixture.store.save(cursor: cursor)
         let oldEvent = storedEvent(
             at: earliestStart.addingTimeInterval(-1),
             input: 10,
@@ -327,12 +929,110 @@ final class UsageServiceTests: XCTestCase {
             to: .distantFuture
         )
         let retainedDays = try await fixture.store.officialDays()
+        let retainedCursor = try await fixture.store.cursor(
+            for: cursor.pathHash
+        )
 
         XCTAssertFalse(retainedEvents.contains { $0.signature == oldEvent.signature })
         XCTAssertTrue(retainedEvents.contains { $0.signature == keptEvent.signature })
         XCTAssertEqual(
             retainedDays.map(\.day.iso8601),
             ["2026-07-06", "2026-08-30"]
+        )
+        XCTAssertEqual(retainedCursor, cursor)
+    }
+
+    func testOldestRetainedCycleUsesEventsOlderThanIndexWindow() async throws {
+        let fixture = try await ServiceFixture.make()
+        try await fixture.store.migrate()
+        let week = TimeInterval(7 * 24 * 60 * 60)
+        let currentStart = now.addingTimeInterval(-week / 2)
+        let earliestStart = currentStart.addingTimeInterval(-8 * week)
+        let cycles = (0..<8).map { index in
+            let startsAt = earliestStart.addingTimeInterval(
+                TimeInterval(index) * week
+            )
+            return QuotaCycle(
+                startsAt: startsAt,
+                endsAt: startsAt.addingTimeInterval(week),
+                usage: .zero,
+                displayedTokens: 0,
+                status: .localLive,
+                boundaryIsEstimated: false
+            )
+        }
+        try await fixture.store.replace(cycles: cycles)
+        _ = try await fixture.store.insert(
+            events: [
+                storedEvent(
+                    at: earliestStart.addingTimeInterval(60),
+                    input: 30,
+                    output: 3
+                )
+            ]
+        )
+        await fixture.accountClient.setLimits(
+            RateLimitsResponse(
+                rateLimits: RateLimitBucket(
+                    limitId: "codex",
+                    limitName: nil,
+                    primary: RateLimitWindow(
+                        usedPercent: 25,
+                        windowDurationMins: 10_080,
+                        resetsAt: Int64(now.addingTimeInterval(week / 2).timeIntervalSince1970)
+                    ),
+                    secondary: nil
+                ),
+                rateLimitsByLimitId: nil
+            )
+        )
+
+        _ = try await fixture.service.refresh(reason: .startup, now: now)
+        let retainedCycles = try await fixture.store.cycles()
+
+        XCTAssertEqual(retainedCycles.count, 9)
+        XCTAssertEqual(retainedCycles.first?.startsAt, earliestStart)
+        XCTAssertEqual(retainedCycles.first?.usage.inputTokens, 30)
+        XCTAssertEqual(retainedCycles.first?.usage.outputTokens, 3)
+    }
+
+    func testExpandedCycleReadDoesNotExpandIndexerScanWindow() async throws {
+        let codexHome = try temporaryCodexHome()
+        let store = try SQLiteUsageStore(databaseURL: try temporaryDatabaseURL())
+        try await store.migrate()
+        let oldCycle = QuotaCycle(
+            startsAt: now.addingTimeInterval(-70 * 24 * 60 * 60),
+            endsAt: now.addingTimeInterval(-63 * 24 * 60 * 60),
+            usage: .zero,
+            displayedTokens: 0,
+            status: .localLive,
+            boundaryIsEstimated: false
+        )
+        try await store.replace(cycles: [oldCycle])
+        let client = FakeAccountUsageClient(
+            initialized: InitializeResult(
+                codexHome: codexHome.path,
+                platformFamily: "unix",
+                platformOs: "macos",
+                userAgent: "test"
+            ),
+            limits: ServiceFixture.fullLimits,
+            usage: ServiceFixture.fullUsage
+        )
+        let indexer = RecordingSessionIndexer()
+        let service = makeService(
+            accountClient: client,
+            indexer: indexer,
+            store: store,
+            codexHome: codexHome
+        )
+
+        _ = try await service.refresh(reason: .startup, now: now)
+        let cutoff = await indexer.modifiedSince()
+
+        XCTAssertEqual(
+            cutoff,
+            now.addingTimeInterval(-56 * 24 * 60 * 60)
         )
     }
 
@@ -419,5 +1119,96 @@ final class UsageServiceTests: XCTestCase {
 
         await watcher.stop()
         consumer.cancel()
+    }
+
+    func testDirectoryWatcherRejectsCallbacksFromReplacedGeneration() async throws {
+        let directory = try temporaryDirectory()
+        let watcher = SessionDirectoryWatcher(
+            coalescingDelay: .milliseconds(50)
+        )
+        let firstStream = await watcher.changes(for: [directory])
+        let firstConsumer = Task {
+            for await _ in firstStream {}
+        }
+        let secondStream = await watcher.changes(for: [directory])
+        let secondConsumer = Task {
+            for await _ in secondStream {}
+        }
+
+        let acceptedOld = await watcher.recordChange(generation: 1)
+        let acceptedCurrent = await watcher.recordChange(generation: 2)
+
+        XCTAssertFalse(acceptedOld)
+        XCTAssertTrue(acceptedCurrent)
+        await watcher.stop()
+        firstConsumer.cancel()
+        secondConsumer.cancel()
+    }
+
+    func testDirectoryWatcherRejectsQueuedWorkAfterConsumerCancellation() async throws {
+        let directory = try temporaryDirectory()
+        let watcher = SessionDirectoryWatcher(
+            coalescingDelay: .milliseconds(50)
+        )
+        let stream = await watcher.changes(for: [directory])
+        let consumer = Task {
+            for await _ in stream {}
+        }
+        consumer.cancel()
+        for _ in 0..<200 { await Task.yield() }
+
+        let acceptedCallback = await watcher.recordChange(generation: 1)
+        let acceptedFinish = await watcher.finishCoalescingWindow(
+            generation: 1
+        )
+
+        XCTAssertFalse(acceptedCallback)
+        XCTAssertFalse(acceptedFinish)
+    }
+
+    private func makeService(
+        accountClient: any AccountUsageReading,
+        indexer: any SessionUsageIndexing,
+        store: any UsageStore,
+        codexHome: URL
+    ) -> UsageService {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        return UsageService(
+            accountClient: accountClient,
+            indexer: indexer,
+            store: store,
+            environment: [:],
+            homeDirectory: codexHome.deletingLastPathComponent(),
+            calendar: calendar
+        )
+    }
+
+    private func rateLimitUpdate(
+        usedPercent: Double
+    ) throws -> RateLimitsUpdatedParams {
+        try JSONDecoder().decode(
+            RateLimitsUpdatedParams.self,
+            from: Data(
+                """
+                {"rateLimits":{"primary":{"usedPercent":\(usedPercent)}}}
+                """.utf8
+            )
+        )
+    }
+
+    private func clearingPrimaryUpdate() throws -> RateLimitsUpdatedParams {
+        try JSONDecoder().decode(
+            RateLimitsUpdatedParams.self,
+            from: Data(#"{"rateLimits":{"primary":null}}"#.utf8)
+        )
+    }
+
+    private func rpcFailure() -> RPCErrorPayload {
+        RPCErrorPayload(
+            code: -32600,
+            message: "authentication required",
+            data: nil
+        )
     }
 }

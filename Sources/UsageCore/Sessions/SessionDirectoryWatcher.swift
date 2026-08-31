@@ -18,8 +18,8 @@ public actor SessionDirectoryWatcher {
         guard !stopped else {
             return AsyncStream { $0.finish() }
         }
-        stopResources()
         generation &+= 1
+        stopResources()
         let currentGeneration = generation
         let pair = AsyncStream<Void>.makeStream()
         continuation = pair.continuation
@@ -36,7 +36,7 @@ public actor SessionDirectoryWatcher {
 
         let callbackBox = WatcherCallbackBox { [weak self] in
             Task {
-                await self?.recordChange()
+                await self?.recordChange(generation: currentGeneration)
             }
         }
         let callbackInfo = Unmanaged.passRetained(callbackBox).toOpaque()
@@ -94,11 +94,18 @@ public actor SessionDirectoryWatcher {
     public func stop() {
         guard !stopped else { return }
         stopped = true
+        generation &+= 1
         stopResources()
     }
 
-    private func recordChange() {
-        guard !stopped, stream != nil, continuation != nil else { return }
+    @discardableResult
+    func recordChange(generation: UInt64) -> Bool {
+        guard generation == self.generation,
+              !stopped,
+              stream != nil,
+              continuation != nil else {
+            return false
+        }
         if trailingTask == nil {
             continuation?.yield()
             hasPendingTrailingChange = false
@@ -109,23 +116,27 @@ public actor SessionDirectoryWatcher {
                 } catch {
                     return
                 }
-                await self?.finishCoalescingWindow()
+                await self?.finishCoalescingWindow(generation: generation)
             }
         } else {
             hasPendingTrailingChange = true
         }
+        return true
     }
 
-    private func finishCoalescingWindow() {
+    @discardableResult
+    func finishCoalescingWindow(generation: UInt64) -> Bool {
+        guard generation == self.generation else { return false }
         trailingTask = nil
         guard !stopped, stream != nil else {
             hasPendingTrailingChange = false
-            return
+            return false
         }
         if hasPendingTrailingChange {
             hasPendingTrailingChange = false
             continuation?.yield()
         }
+        return true
     }
 
     private func consumerTerminated(generation: UInt64) {

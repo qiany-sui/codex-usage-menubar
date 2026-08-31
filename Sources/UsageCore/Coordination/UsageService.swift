@@ -38,6 +38,8 @@ public actor UsageService {
     private var lastQuotaRefresh: Date?
     private var lastOfficialRefresh: Date?
     private var consecutiveFailures = 0
+    private var operationIsLocked = false
+    private var operationWaiters: [CheckedContinuation<Void, Never>] = []
 
     public init(
         accountClient: any AccountUsageReading,
@@ -58,6 +60,16 @@ public actor UsageService {
     }
 
     public func refresh(
+        reason: RefreshReason,
+        now: Date
+    ) async throws -> UsageSnapshot {
+        await acquireOperation()
+        defer { releaseOperation() }
+        try Task.checkCancellation()
+        return try await refreshLocked(reason: reason, now: now)
+    }
+
+    private func refreshLocked(
         reason: RefreshReason,
         now: Date
     ) async throws -> UsageSnapshot {
@@ -83,8 +95,14 @@ public actor UsageService {
         )
 
         if decision.refreshQuota, didInitialize {
+            let response: RateLimitsResponse?
             do {
-                let response = try await accountClient.readRateLimits()
+                response = try await accountClient.readRateLimits()
+            } catch {
+                response = nil
+                degraded = true
+            }
+            if let response {
                 lastFullRateLimits = response
                 if let quota = quotaSelector.select(
                     from: response,
@@ -95,37 +113,33 @@ public actor UsageService {
                 } else {
                     degraded = true
                 }
-            } catch let error as SQLiteStoreError {
-                throw error
-            } catch {
-                degraded = true
             }
         } else if decision.refreshQuota {
             degraded = true
         }
 
         if decision.refreshOfficialUsage, didInitialize {
+            let response: AccountUsageResponse?
             do {
-                let response = try await accountClient.readAccountUsage()
-                guard let buckets = response.dailyUsageBuckets else {
-                    degraded = true
-                    throw RemoteDataUnavailable()
-                }
-                let conversion = officialDays(from: buckets, fetchedAt: now)
-                if !conversion.days.isEmpty {
-                    try await store.upsert(officialDays: conversion.days)
-                }
-                if conversion.hadInvalidBucket {
-                    degraded = true
-                } else {
-                    lastOfficialRefresh = now
-                }
-            } catch let error as SQLiteStoreError {
-                throw error
-            } catch is RemoteDataUnavailable {
-                // 旧版服务可能缺少可选字段，保留本地已有数据。
+                response = try await accountClient.readAccountUsage()
             } catch {
+                response = nil
                 degraded = true
+            }
+            if let response {
+                if let buckets = response.dailyUsageBuckets {
+                    let conversion = officialDays(from: buckets, fetchedAt: now)
+                    if !conversion.days.isEmpty {
+                        try await store.upsert(officialDays: conversion.days)
+                    }
+                    if conversion.hadInvalidBucket {
+                        degraded = true
+                    } else {
+                        lastOfficialRefresh = now
+                    }
+                } else {
+                    degraded = true
+                }
             }
         } else if decision.refreshOfficialUsage {
             degraded = true
@@ -167,6 +181,15 @@ public actor UsageService {
     }
 
     public func processNextAccountNotification(
+        now: Date
+    ) async throws -> UsageSnapshot? {
+        await acquireOperation()
+        defer { releaseOperation() }
+        try Task.checkCancellation()
+        return try await processNextAccountNotificationLocked(now: now)
+    }
+
+    private func processNextAccountNotificationLocked(
         now: Date
     ) async throws -> UsageSnapshot? {
         try await migrateIfNeeded()
@@ -215,8 +238,33 @@ public actor UsageService {
     }
 
     public func currentSnapshot(now: Date) async throws -> UsageSnapshot {
+        await acquireOperation()
+        defer { releaseOperation() }
+        try Task.checkCancellation()
+        return try await currentSnapshotLocked(now: now)
+    }
+
+    private func currentSnapshotLocked(now: Date) async throws -> UsageSnapshot {
         try await migrateIfNeeded()
         return try await buildSnapshot(now: now, updateCycles: false)
+    }
+
+    private func acquireOperation() async {
+        if !operationIsLocked {
+            operationIsLocked = true
+            return
+        }
+        await withCheckedContinuation { continuation in
+            operationWaiters.append(continuation)
+        }
+    }
+
+    private func releaseOperation() {
+        guard !operationWaiters.isEmpty else {
+            operationIsLocked = false
+            return
+        }
+        operationWaiters.removeFirst().resume()
     }
 
     private func migrateIfNeeded() async throws {
@@ -229,15 +277,19 @@ public actor UsageService {
         now: Date,
         updateCycles: Bool
     ) async throws -> UsageSnapshot {
+        var cycles = try await store.cycles()
+        let eventStart = min(
+            historyStart(now: now),
+            cycles.first?.startsAt ?? historyStart(now: now)
+        )
         let events = try await store.events(
-            from: historyStart(now: now),
+            from: eventStart,
             to: Date(
                 timeIntervalSince1970: now.timeIntervalSince1970.nextUp
             )
         )
         let officialDays = try await store.officialDays()
         let quota = try await store.latestQuota()
-        var cycles = try await store.cycles()
 
         if updateCycles, let quota {
             cycles = cycleTracker.update(
@@ -362,8 +414,6 @@ public actor UsageService {
         return overflow ? .max : next
     }
 }
-
-private struct RemoteDataUnavailable: Error {}
 
 private extension UsageSnapshot {
     func markedStale() -> UsageSnapshot {
