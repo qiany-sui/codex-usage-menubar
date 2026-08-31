@@ -24,7 +24,6 @@ public actor SessionUsageIndexer {
     private let parser = SessionLineParser()
     private let scanner = SessionFileScanner()
     private let beforeSnapshotRead: (@Sendable (URL) throws -> Void)?
-    private var filesRequiringFullRescan: Set<Data> = []
 
     public init(store: any UsageStore) {
         self.store = store
@@ -69,9 +68,7 @@ public actor SessionUsageIndexer {
             try? opened.handle.close()
         }
 
-        let forceFullRescan = filesRequiringFullRescan.contains(pathHash)
-        let canResume = !forceFullRescan
-            && existingCursor?.deviceID == opened.snapshot.deviceID
+        let canResume = existingCursor?.deviceID == opened.snapshot.deviceID
             && existingCursor?.inode == opened.snapshot.inode
             && (existingCursor?.committedOffset ?? -1) >= 0
             && (existingCursor?.committedOffset ?? -1) <= opened.snapshot.size
@@ -81,6 +78,21 @@ public actor SessionUsageIndexer {
         let initialState = canResume
             ? existingCursor?.counterState ?? SessionCounterState(previousTotal: nil)
             : SessionCounterState(previousTotal: nil)
+
+        if let existingCursor,
+           existingCursor.deviceID == opened.snapshot.deviceID,
+           existingCursor.inode == opened.snapshot.inode,
+           existingCursor.committedOffset > 0 {
+            try await store.save(
+                cursor: FileCursor(
+                    pathHash: pathHash,
+                    deviceID: opened.snapshot.deviceID,
+                    inode: opened.snapshot.inode,
+                    committedOffset: 0,
+                    counterState: SessionCounterState(previousTotal: nil)
+                )
+            )
+        }
 
         guard let seekOffset = UInt64(exactly: startingOffset) else {
             throw SessionUsageIndexerError.offsetOverflow
@@ -97,7 +109,6 @@ public actor SessionUsageIndexer {
         )
         guard unread.count == readCount,
               try snapshot(of: opened.handle) == opened.snapshot else {
-            filesRequiringFullRescan.insert(pathHash)
             return 0
         }
         let completeByteCount: Int
@@ -166,12 +177,9 @@ public actor SessionUsageIndexer {
             counterState: accumulator.state
         )
         guard try snapshot(of: opened.handle) == opened.snapshot else {
-            filesRequiringFullRescan.insert(pathHash)
             return 0
         }
-        let inserted = try await store.ingest(events: events, cursor: cursor)
-        filesRequiringFullRescan.remove(pathHash)
-        return inserted
+        return try await store.ingest(events: events, cursor: cursor)
     }
 
     private func openRegularFile(at url: URL) throws -> OpenedFile {

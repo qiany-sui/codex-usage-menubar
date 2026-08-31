@@ -389,12 +389,13 @@ final class SessionUsageIndexerTests: XCTestCase {
             calendar: calendar
         )
         let cursorAfterUnstable = try await store.cursor(for: pathHash)
-        let retry = try await indexer.index(
+        let restartedIndexer = SessionUsageIndexer(store: store)
+        let retry = try await restartedIndexer.index(
             codexHome: root,
             modifiedSince: .distantPast,
             calendar: calendar
         )
-        let stableRepeat = try await indexer.index(
+        let stableRepeat = try await restartedIndexer.index(
             codexHome: root,
             modifiedSince: .distantPast,
             calendar: calendar
@@ -402,10 +403,78 @@ final class SessionUsageIndexerTests: XCTestCase {
         let events = try await store.events(from: .distantPast, to: .distantFuture)
 
         XCTAssertEqual(unstable.insertedEventCount, 0)
-        XCTAssertEqual(cursorAfterUnstable, originalCursor)
+        XCTAssertEqual(cursorAfterUnstable?.pathHash, originalCursor.pathHash)
+        XCTAssertEqual(cursorAfterUnstable?.deviceID, originalCursor.deviceID)
+        XCTAssertEqual(cursorAfterUnstable?.inode, originalCursor.inode)
+        XCTAssertEqual(cursorAfterUnstable?.committedOffset, 0)
+        XCTAssertNil(cursorAfterUnstable?.counterState.previousTotal)
         XCTAssertEqual(retry.insertedEventCount, 2)
         XCTAssertEqual(stableRepeat.insertedEventCount, 0)
         XCTAssertEqual(events.map(\.usage.inputTokens), [100, 300, 400])
+    }
+
+    func testRecoveryCursorFailureThrowsBeforeSnapshotRead() async throws {
+        let root = try temporaryCodexHome()
+        let session = root
+            .appendingPathComponent("sessions")
+            .appendingPathComponent("recovery-failure.jsonl")
+        let firstLine = tokenLine(
+            timestamp: "2026-08-31T01:00:00.000Z",
+            input: 100,
+            cached: 40,
+            output: 20
+        ) + "\n"
+        let secondLine = tokenLine(
+            timestamp: "2026-08-31T01:01:00.000Z",
+            input: 200,
+            cached: 80,
+            output: 40
+        ) + "\n"
+        try Data(firstLine.utf8).write(to: session)
+        let databaseURL = try temporaryDatabaseURL()
+        let store = try SQLiteUsageStore(databaseURL: databaseURL)
+        try await store.migrate()
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        _ = try await SessionUsageIndexer(store: store).index(
+            codexHome: root,
+            modifiedSince: .distantPast,
+            calendar: calendar
+        )
+        let stableContents = firstLine + secondLine
+        try Data(stableContents.utf8).write(to: session)
+        do {
+            let fixture = try SQLiteConnection(databaseURL: databaseURL)
+            try fixture.execute(
+                """
+                CREATE TRIGGER reject_recovery_cursor
+                BEFORE UPDATE ON file_cursors
+                BEGIN
+                  SELECT RAISE(ABORT, 'reject recovery cursor');
+                END;
+                """,
+                operation: "test fixture"
+            )
+        }
+        let indexer = SessionUsageIndexer(
+            store: store,
+            beforeSnapshotRead: { url in
+                try Data("hook-ran".utf8).write(to: url)
+            }
+        )
+
+        await XCTAssertThrowsErrorAsync(
+            try await indexer.index(
+                codexHome: root,
+                modifiedSince: .distantPast,
+                calendar: calendar
+            )
+        ) { error in
+            XCTAssertNotNil(error as? SQLiteStoreError)
+        }
+        let remainingContents = try Data(contentsOf: session)
+
+        XCTAssertEqual(remainingContents, Data(stableContents.utf8))
     }
 
     func testArchivedReplayDoesNotIncreaseEventCount() async throws {
