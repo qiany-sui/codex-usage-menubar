@@ -111,9 +111,12 @@ public enum AppServerNotification: Sendable {
 }
 
 public extension RateLimitWindow {
-    func applying(_ patch: RateLimitWindowPatch) -> RateLimitWindow {
-        RateLimitWindow(
-            usedPercent: patch.usedPercent.value ?? usedPercent,
+    func applying(_ patch: RateLimitWindowPatch) -> RateLimitWindow? {
+        guard let usedPercent = patch.usedPercent.applying(to: usedPercent) else {
+            return nil
+        }
+        return RateLimitWindow(
+            usedPercent: usedPercent,
             windowDurationMins: patch.windowDurationMins.applying(to: windowDurationMins),
             resetsAt: patch.resetsAt.applying(to: resetsAt)
         )
@@ -143,10 +146,17 @@ public extension RateLimitBucket {
 public extension RateLimitsResponse {
     func applying(_ update: RateLimitsUpdatedParams) -> RateLimitsResponse {
         let mergedRateLimits = rateLimits.applying(update.rateLimits)
-        let mergedByLimitID = rateLimitsByLimitId?.mapValues { bucket in
-            bucket.limitId == mergedRateLimits.limitId
-                ? bucket.applying(update.rateLimits)
-                : bucket
+        let mergedByLimitID = rateLimitsByLimitId?.reduce(
+            into: [String: RateLimitBucket]()
+        ) {
+            result, entry in
+            let (key, bucket) = entry
+            if let limitID = mergedRateLimits.limitId, !limitID.isEmpty,
+               key == limitID || bucket.limitId == limitID {
+                result[key] = bucket.applying(update.rateLimits)
+            } else {
+                result[key] = bucket
+            }
         }
         return RateLimitsResponse(
             rateLimits: mergedRateLimits,
@@ -189,7 +199,7 @@ private extension Optional where Wrapped == RateLimitWindow {
         case .value(nil):
             return nil
         case let .value(.some(windowPatch)):
-            return map { $0.applying(windowPatch) }
+            return flatMap { $0.applying(windowPatch) }
                 ?? RateLimitWindow.applying(windowPatch)
         }
     }

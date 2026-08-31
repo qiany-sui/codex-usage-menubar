@@ -58,4 +58,84 @@ final class JSONRPCModelsTests: XCTestCase {
             1_788_753_600
         )
     }
+
+    func testUpdateWithClearedLimitIDDoesNotMergeIntoUnidentifiedBuckets() throws {
+        let response = RateLimitsResponse(
+            rateLimits: RateLimitBucket(
+                limitId: "codex",
+                limitName: nil,
+                primary: nil,
+                secondary: RateLimitWindow(
+                    usedPercent: 10,
+                    windowDurationMins: 10_080,
+                    resetsAt: 1_788_753_600
+                )
+            ),
+            rateLimitsByLimitId: [
+                "first": RateLimitBucket(
+                    limitId: nil,
+                    limitName: nil,
+                    primary: nil,
+                    secondary: RateLimitWindow(
+                        usedPercent: 20,
+                        windowDurationMins: 10_080,
+                        resetsAt: 1_788_753_600
+                    )
+                ),
+                "second": RateLimitBucket(
+                    limitId: nil,
+                    limitName: nil,
+                    primary: nil,
+                    secondary: RateLimitWindow(
+                        usedPercent: 30,
+                        windowDurationMins: 10_080,
+                        resetsAt: 1_788_753_600
+                    )
+                )
+            ]
+        )
+        let update = try JSONDecoder().decode(
+            RateLimitsUpdatedParams.self,
+            from: Data(#"{"rateLimits":{"limitId":null,"secondary":{"usedPercent":99}}}"#.utf8)
+        )
+
+        let merged = response.applying(update)
+
+        XCTAssertNil(merged.rateLimits.limitId)
+        XCTAssertEqual(merged.rateLimits.secondary?.usedPercent, 99)
+        XCTAssertEqual(merged.rateLimitsByLimitId?["first"]?.secondary?.usedPercent, 20)
+        XCTAssertEqual(merged.rateLimitsByLimitId?["second"]?.secondary?.usedPercent, 30)
+    }
+
+    func testExplicitNullUsedPercentDiscardsRootAndMappedWindows() throws {
+        let bucket = RateLimitBucket(
+            limitId: "codex",
+            limitName: nil,
+            primary: RateLimitWindow(
+                usedPercent: 10,
+                windowDurationMins: 300,
+                resetsAt: 1_788_170_400
+            ),
+            secondary: RateLimitWindow(
+                usedPercent: 20,
+                windowDurationMins: 10_080,
+                resetsAt: 1_788_753_600
+            )
+        )
+        let response = RateLimitsResponse(
+            rateLimits: bucket,
+            rateLimitsByLimitId: ["codex": bucket]
+        )
+        let update = try JSONDecoder().decode(
+            RateLimitsUpdatedParams.self,
+            from: Data(#"{"rateLimits":{"secondary":{"usedPercent":null}}}"#.utf8)
+        )
+
+        let merged = response.applying(update)
+
+        XCTAssertNil(merged.rateLimits.secondary)
+        XCTAssertNil(merged.rateLimitsByLimitId?["codex"]?.secondary)
+        XCTAssertEqual(merged.rateLimits.primary?.usedPercent, 10)
+        XCTAssertEqual(merged.rateLimitsByLimitId?["codex"]?.primary?.usedPercent, 10)
+    }
 }
