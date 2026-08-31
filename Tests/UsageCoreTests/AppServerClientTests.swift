@@ -4,9 +4,12 @@ import XCTest
 
 actor ScriptedTransport: AppServerTransport {
     private var lines: [Data?]
+    private let closeWhenExhausted: Bool
+    private var lineWaiters: [CheckedContinuation<Data?, Never>] = []
 
-    init(lines: [Data?]) {
+    init(lines: [Data?], closeWhenExhausted: Bool = true) {
         self.lines = lines
+        self.closeWhenExhausted = closeWhenExhausted
     }
 
     func start() async throws {}
@@ -14,13 +17,23 @@ actor ScriptedTransport: AppServerTransport {
 
     func nextLine() async throws -> Data? {
         guard !lines.isEmpty else {
-            return nil
+            if closeWhenExhausted {
+                return nil
+            }
+            return await withCheckedContinuation {
+                lineWaiters.append($0)
+            }
         }
         return lines.removeFirst()
     }
 
     func stop() async {
         lines.removeAll()
+        let waiters = lineWaiters
+        lineWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume(returning: nil)
+        }
     }
 }
 
@@ -34,6 +47,147 @@ actor StallingTransport: AppServerTransport {
     }
 
     func stop() async {}
+}
+
+actor ControlledStartTransport: AppServerTransport {
+    private var didEnterStart = false
+    private var didReleaseStart = false
+    private var didCloseLines = false
+    private var startObservers: [CheckedContinuation<Void, Never>] = []
+    private var startRelease: CheckedContinuation<Void, Never>?
+    private var lineWaiters: [CheckedContinuation<Data?, Never>] = []
+
+    func start() async throws {
+        didEnterStart = true
+        let observers = startObservers
+        startObservers.removeAll()
+        for observer in observers {
+            observer.resume()
+        }
+        guard !didReleaseStart else { return }
+        await withCheckedContinuation {
+            startRelease = $0
+        }
+    }
+
+    func send(line: Data) async throws {}
+
+    func nextLine() async throws -> Data? {
+        guard !didCloseLines else { return nil }
+        return await withCheckedContinuation {
+            lineWaiters.append($0)
+        }
+    }
+
+    func stop() async {}
+
+    func waitUntilStartEntered() async {
+        guard !didEnterStart else { return }
+        await withCheckedContinuation {
+            startObservers.append($0)
+        }
+    }
+
+    func releaseStart() {
+        didReleaseStart = true
+        startRelease?.resume()
+        startRelease = nil
+    }
+
+    func closeLines() {
+        didCloseLines = true
+        let waiters = lineWaiters
+        lineWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume(returning: nil)
+        }
+    }
+}
+
+actor OutOfOrderTransport: AppServerTransport {
+    private struct Request {
+        let id: Int64
+        let method: String
+    }
+
+    private var requests: [Request] = []
+    private var lines: [Data] = []
+    private var lineWaiters: [CheckedContinuation<Data?, Never>] = []
+    private var didStop = false
+
+    func start() async throws {}
+
+    func send(line: Data) async throws {
+        guard
+            let object = try? JSONSerialization.jsonObject(with: line)
+                as? [String: Any],
+            let id = (object["id"] as? NSNumber)?.int64Value,
+            let method = object["method"] as? String
+        else {
+            return
+        }
+        requests.append(Request(id: id, method: method))
+        guard requests.count == 2 else { return }
+
+        enqueue(
+            Data(#"{"id":999,"result":{"ignored":true}}"#.utf8)
+        )
+        for request in requests.reversed() {
+            enqueue(try response(for: request))
+        }
+    }
+
+    func nextLine() async throws -> Data? {
+        if !lines.isEmpty {
+            return lines.removeFirst()
+        }
+        guard !didStop else { return nil }
+        return await withCheckedContinuation {
+            lineWaiters.append($0)
+        }
+    }
+
+    func stop() async {
+        didStop = true
+        let waiters = lineWaiters
+        lineWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume(returning: nil)
+        }
+    }
+
+    private func enqueue(_ line: Data) {
+        if lineWaiters.isEmpty {
+            lines.append(line)
+        } else {
+            lineWaiters.removeFirst().resume(returning: line)
+        }
+    }
+
+    private func response(for request: Request) throws -> Data {
+        let result: [String: Any]
+        switch request.method {
+        case "account/rateLimits/read":
+            result = [
+                "rateLimits": [
+                    "limitId": "codex",
+                    "primary": ["usedPercent": 25],
+                    "secondary": NSNull()
+                ],
+                "rateLimitsByLimitId": NSNull()
+            ]
+        case "account/usage/read":
+            result = [
+                "summary": ["lifetimeTokens": 42],
+                "dailyUsageBuckets": []
+            ]
+        default:
+            result = [:]
+        }
+        return try JSONSerialization.data(
+            withJSONObject: ["id": request.id, "result": result]
+        )
+    }
 }
 
 final class AppServerClientTests: XCTestCase {
@@ -82,6 +236,32 @@ final class AppServerClientTests: XCTestCase {
         )
     }
 
+    func testExecutableResolverSkipsDirectoriesAndNonExecutableFiles() throws {
+        let root = try temporaryDirectory()
+        temporaryDirectories.append(root)
+        let pathDirectory = root.appendingPathComponent("bin")
+        let directoryCandidate = pathDirectory.appendingPathComponent("codex")
+        try FileManager.default.createDirectory(
+            at: directoryCandidate,
+            withIntermediateDirectories: true
+        )
+        let nonExecutable = root.appendingPathComponent("non-executable-codex")
+        try Data("#!/bin/sh\n".utf8).write(to: nonExecutable)
+        let fallback = root.appendingPathComponent("fallback-codex")
+        try Data("#!/bin/sh\n".utf8).write(to: fallback)
+        XCTAssertEqual(
+            chmod(fallback.path, S_IRUSR | S_IWUSR | S_IXUSR),
+            0
+        )
+
+        let resolved = CodexExecutableResolver().resolve(
+            environment: ["PATH": pathDirectory.path],
+            standardLocations: [nonExecutable, fallback]
+        )
+
+        XCTAssertEqual(resolved, fallback)
+    }
+
     func testLineFramerReturnsCompleteLinesAndDiscardsTrailingPartialLine() {
         var framer = JSONLLineFramer()
 
@@ -95,6 +275,81 @@ final class AppServerClientTests: XCTestCase {
         )
         framer.finish()
         XCTAssertEqual(framer.append(Data("next\n".utf8)), [Data("next".utf8)])
+    }
+
+    func testProcessDeliversFinalLineBeforeZeroExit() async throws {
+        let transport = try processTransport(mode: "response-exit")
+
+        try await transport.start()
+        let line = try await transport.nextLine()
+        let eof = try await transport.nextLine()
+        await transport.stop()
+
+        XCTAssertEqual(line, Data("response".utf8))
+        XCTAssertNil(eof)
+    }
+
+    func testProcessFinishesAtStdoutEOFBeforeProcessExit() async throws {
+        let transport = try processTransport(mode: "stdout-eof")
+        let clock = ContinuousClock()
+
+        try await transport.start()
+        let startedAt = clock.now
+        let eof = try await transport.nextLine()
+        let elapsed = startedAt.duration(to: clock.now)
+        await transport.stop()
+
+        XCTAssertNil(eof)
+        XCTAssertLessThan(elapsed, .seconds(1))
+    }
+
+    func testProcessDeliversFinalLineThenReportsNonzeroExit() async throws {
+        let transport = try processTransport(mode: "nonzero-exit")
+
+        try await transport.start()
+        let line = try await transport.nextLine()
+
+        XCTAssertEqual(line, Data("response".utf8))
+        await XCTAssertThrowsErrorAsync(
+            try await transport.nextLine()
+        ) { error in
+            XCTAssertEqual(
+                error as? ProcessJSONLTransportError,
+                .processExited(7)
+            )
+        }
+        await transport.stop()
+    }
+
+    func testProcessStartsOnlyOnceAndStopIsIdempotent() async throws {
+        let root = try temporaryDirectory()
+        temporaryDirectories.append(root)
+        let marker = root.appendingPathComponent("starts")
+        let transport = try processTransport(
+            mode: "start-marker",
+            arguments: [marker.path]
+        )
+
+        try await transport.start()
+        try await transport.start()
+        let line = try await transport.nextLine()
+        let starts = try Data(contentsOf: marker)
+        await transport.stop()
+        await transport.stop()
+
+        XCTAssertEqual(line, Data("started".utf8))
+        XCTAssertEqual(starts, Data("x".utf8))
+    }
+
+    func testProcessSendAppendsExactlyOneNewline() async throws {
+        let transport = try processTransport(mode: "exact-newline")
+
+        try await transport.start()
+        try await transport.send(line: Data("payload\n\n".utf8))
+        let line = try await transport.nextLine()
+        await transport.stop()
+
+        XCTAssertEqual(line, Data("single:payload".utf8))
     }
 
     func testClientCompletesHandshakeAndReadsUsageThroughJSONLProcess() async throws {
@@ -163,12 +418,14 @@ final class AppServerClientTests: XCTestCase {
         )
         let client = CodexAppServerClient(
             transport: ScriptedTransport(
-                lines: [malformed, malformedNotification, response]
+                lines: [malformed, malformedNotification, response],
+                closeWhenExhausted: false
             ),
             requestTimeout: .seconds(1)
         )
 
         let result = try await client.initialize()
+        await client.stop()
 
         XCTAssertEqual(result.platformOs, "macos")
     }
@@ -187,6 +444,64 @@ final class AppServerClientTests: XCTestCase {
                 .transportClosed
             )
         }
+    }
+
+    func testRequestAfterEOFImmediatelyReturnsTransportClosed() async {
+        let client = CodexAppServerClient(
+            transport: ScriptedTransport(lines: [nil]),
+            requestTimeout: .milliseconds(50)
+        )
+
+        await XCTAssertThrowsErrorAsync(
+            try await client.initialize()
+        ) { error in
+            XCTAssertEqual(error as? AppServerClientError, .transportClosed)
+        }
+        await XCTAssertThrowsErrorAsync(
+            try await client.readRateLimits()
+        ) { error in
+            XCTAssertEqual(error as? AppServerClientError, .transportClosed)
+        }
+    }
+
+    func testStopDuringStartPreventsReceiveLoopAndPendingRequest() async {
+        let transport = ControlledStartTransport()
+        let client = CodexAppServerClient(
+            transport: transport,
+            requestTimeout: .milliseconds(50)
+        )
+        let request = Task {
+            try await client.initialize()
+        }
+
+        await transport.waitUntilStartEntered()
+        await client.stop()
+        await transport.releaseStart()
+
+        await XCTAssertThrowsErrorAsync(
+            try await request.value
+        ) { error in
+            XCTAssertEqual(error as? AppServerClientError, .transportClosed)
+        }
+        await transport.closeLines()
+    }
+
+    func testMultiplePendingRequestsIgnoreUnknownIDAndRouteOutOfOrderResponses() async throws {
+        let client = CodexAppServerClient(
+            transport: OutOfOrderTransport(),
+            requestTimeout: .seconds(1)
+        )
+
+        async let limits = client.readRateLimits()
+        async let usage = client.readAccountUsage()
+        let (resolvedLimits, resolvedUsage) = try await (limits, usage)
+        await client.stop()
+
+        XCTAssertEqual(
+            resolvedLimits.rateLimits.primary?.usedPercent,
+            25
+        )
+        XCTAssertEqual(resolvedUsage.summary.lifetimeTokens, 42)
     }
 
     func testRequestTimeoutRemovesPendingContinuation() async throws {
@@ -224,5 +539,23 @@ final class AppServerClientTests: XCTestCase {
             XCTAssertTrue(error is CancellationError)
         }
         await client.stop()
+    }
+
+
+    private func processTransport(
+        mode: String,
+        arguments: [String] = []
+    ) throws -> ProcessJSONLTransport {
+        let fixture = try XCTUnwrap(
+            Bundle.module.url(
+                forResource: "process-transport-fixture",
+                withExtension: "sh",
+                subdirectory: "Fixtures"
+            )
+        )
+        return ProcessJSONLTransport(
+            executableURL: URL(fileURLWithPath: "/bin/bash"),
+            arguments: [fixture.path, mode] + arguments
+        )
     }
 }

@@ -18,10 +18,26 @@ public struct CodexExecutableResolver: Sendable {
                 URL(fileURLWithPath: String($0))
                     .appendingPathComponent("codex")
             }
-        return (pathCandidates + standardLocations).first {
-            FileManager.default.isExecutableFile(
-                atPath: $0.standardizedFileURL.path
-            )
-        }?.standardizedFileURL
+        return (pathCandidates + standardLocations)
+            .map(\.standardizedFileURL)
+            .first(where: isExecutableRegularFile)
+    }
+
+    private func isExecutableRegularFile(_ candidate: URL) -> Bool {
+        var isDirectory = ObjCBool(false)
+        guard
+            FileManager.default.fileExists(
+                atPath: candidate.path,
+                isDirectory: &isDirectory
+            ),
+            !isDirectory.boolValue,
+            FileManager.default.isExecutableFile(atPath: candidate.path),
+            let values = try? candidate.resolvingSymlinksInPath()
+                .resourceValues(forKeys: [.isRegularFileKey]),
+            values.isRegularFile == true
+        else {
+            return false
+        }
+        return true
     }
 }

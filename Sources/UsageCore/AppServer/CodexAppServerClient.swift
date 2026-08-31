@@ -14,6 +14,14 @@ private struct RPCOutgoingMessage: Encodable, Sendable {
 }
 
 public actor CodexAppServerClient {
+    private enum Lifecycle {
+        case idle
+        case starting
+        case running
+        case closed
+        case stopped
+    }
+
     private struct PendingRequest {
         let continuation: CheckedContinuation<JSONValue, Error>
         let timeoutTask: Task<Void, Never>
@@ -29,7 +37,7 @@ public actor CodexAppServerClient {
     private var pending: [Int64: PendingRequest] = [:]
     private var startTask: Task<Void, Error>?
     private var receiveTask: Task<Void, Never>?
-    private var isStopped = false
+    private var lifecycle = Lifecycle.idle
 
     public init(
         transport: any AppServerTransport,
@@ -73,13 +81,15 @@ public actor CodexAppServerClient {
     }
 
     public func stop() async {
-        guard !isStopped else { return }
-        isStopped = true
-        receiveTask?.cancel()
+        guard lifecycle != .stopped else { return }
+        lifecycle = .stopped
+        let receiveTaskToJoin = receiveTask
         receiveTask = nil
+        receiveTaskToJoin?.cancel()
         failAllPending(with: AppServerClientError.transportClosed)
         notificationContinuation.finish()
         await transport.stop()
+        await receiveTaskToJoin?.value
     }
 
     private func request<Response: Decodable & Sendable>(
@@ -115,7 +125,10 @@ public actor CodexAppServerClient {
     }
 
     private func waitForResponse(id: Int64, line: Data) async throws -> JSONValue {
-        try await withTaskCancellationHandler {
+        guard lifecycle == .running else {
+            throw AppServerClientError.transportClosed
+        }
+        return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation {
                 (continuation: CheckedContinuation<JSONValue, Error>) in
                 let timeout = requestTimeout
@@ -143,17 +156,35 @@ public actor CodexAppServerClient {
     }
 
     private func ensureStarted() async throws {
-        guard !isStopped else {
+        switch lifecycle {
+        case .closed, .stopped:
             throw AppServerClientError.transportClosed
-        }
-        if startTask == nil {
+        case .idle:
+            lifecycle = .starting
             let transport = transport
             startTask = Task {
                 try await transport.start()
             }
+        case .starting, .running:
+            break
         }
-        try await startTask?.value
-        if receiveTask == nil {
+        guard let startTask else {
+            throw AppServerClientError.transportClosed
+        }
+        do {
+            try await startTask.value
+        } catch {
+            if lifecycle != .stopped {
+                lifecycle = .closed
+                notificationContinuation.finish()
+            }
+            throw error
+        }
+        guard lifecycle != .closed, lifecycle != .stopped else {
+            throw AppServerClientError.transportClosed
+        }
+        if lifecycle == .starting {
+            lifecycle = .running
             let transport = transport
             receiveTask = Task { [weak self] in
                 do {
@@ -189,6 +220,7 @@ public actor CodexAppServerClient {
     }
 
     private func sendRequestLine(_ line: Data, id: Int64) async {
+        guard lifecycle == .running, pending[id] != nil else { return }
         do {
             try await transport.send(line: line)
         } catch {
@@ -250,6 +282,9 @@ public actor CodexAppServerClient {
     }
 
     private func transportDidClose() {
+        guard lifecycle != .closed, lifecycle != .stopped else { return }
+        lifecycle = .closed
+        receiveTask = nil
         failAllPending(with: AppServerClientError.transportClosed)
         notificationContinuation.finish()
     }

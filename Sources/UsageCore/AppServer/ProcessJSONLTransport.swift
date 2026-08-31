@@ -6,12 +6,15 @@ public enum ProcessJSONLTransportError: Error, Equatable, Sendable {
     case writeFailed
 }
 
-private final class JSONLStreamBridge: @unchecked Sendable {
+private final class ProcessOutputLifecycle: @unchecked Sendable {
     let stream: AsyncThrowingStream<Data, Error>
 
     private let continuation: AsyncThrowingStream<Data, Error>.Continuation
     private let lock = NSLock()
     private var framer = JSONLLineFramer()
+    private var exitStatus: Int32?
+    private var didReachEOF = false
+    private var pendingEOFCompletion: DispatchWorkItem?
     private var isFinished = false
 
     init() {
@@ -20,7 +23,7 @@ private final class JSONLStreamBridge: @unchecked Sendable {
         continuation = pair.continuation
     }
 
-    func append(_ data: Data) {
+    func receive(_ data: Data) {
         lock.lock()
         guard !isFinished else {
             lock.unlock()
@@ -32,24 +35,82 @@ private final class JSONLStreamBridge: @unchecked Sendable {
         lock.unlock()
     }
 
-    func discardPartialLine() {
-        lock.lock()
-        framer.finish()
-        lock.unlock()
-    }
-
-    func finish(throwing error: Error? = nil) {
+    func stdoutDidClose() {
         lock.lock()
         guard !isFinished else {
             lock.unlock()
             return
         }
+        didReachEOF = true
+        framer.finish()
+        if let exitStatus {
+            finishLocked(exitStatus == 0 ? nil : .processExited(exitStatus))
+        } else {
+            let completion = DispatchWorkItem { [weak self] in
+                self?.finishAfterEOFGracePeriod()
+            }
+            pendingEOFCompletion = completion
+            DispatchQueue.global().asyncAfter(
+                deadline: .now() + .milliseconds(100),
+                execute: completion
+            )
+        }
+        lock.unlock()
+    }
+
+    func processDidExit(status: Int32) {
+        lock.lock()
+        guard !isFinished else {
+            lock.unlock()
+            return
+        }
+        exitStatus = status
+        if didReachEOF {
+            pendingEOFCompletion?.cancel()
+            pendingEOFCompletion = nil
+            finishLocked(status == 0 ? nil : .processExited(status))
+        }
+        lock.unlock()
+    }
+
+    func fail(_ error: Error) {
+        lock.lock()
+        finishLocked(error)
+        lock.unlock()
+    }
+
+    func stop() {
+        lock.lock()
+        finishLocked(nil)
+        lock.unlock()
+    }
+
+    private func finishLocked(_ error: ProcessJSONLTransportError?) {
+        guard !isFinished else { return }
         isFinished = true
+        pendingEOFCompletion?.cancel()
+        pendingEOFCompletion = nil
         framer.finish()
         if let error {
             continuation.finish(throwing: error)
         } else {
             continuation.finish()
+        }
+    }
+
+    private func finishLocked(_ error: Error) {
+        guard !isFinished else { return }
+        isFinished = true
+        pendingEOFCompletion?.cancel()
+        pendingEOFCompletion = nil
+        framer.finish()
+        continuation.finish(throwing: error)
+    }
+
+    private func finishAfterEOFGracePeriod() {
+        lock.lock()
+        if didReachEOF, exitStatus == nil {
+            finishLocked(nil)
         }
         lock.unlock()
     }
@@ -109,7 +170,7 @@ private actor TransportLineMailbox {
 public actor ProcessJSONLTransport: AppServerTransport {
     private let executableURL: URL
     private let arguments: [String]
-    private let bridge = JSONLStreamBridge()
+    private let outputLifecycle = ProcessOutputLifecycle()
     private let mailbox = TransportLineMailbox()
 
     private var process: Process?
@@ -137,28 +198,21 @@ public actor ProcessJSONLTransport: AppServerTransport {
         process.standardOutput = outputPipe
         process.standardError = FileHandle.nullDevice
 
-        let bridge = bridge
+        let outputLifecycle = outputLifecycle
         outputPipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
             if data.isEmpty {
-                bridge.discardPartialLine()
+                handle.readabilityHandler = nil
+                outputLifecycle.stdoutDidClose()
             } else {
-                bridge.append(data)
+                outputLifecycle.receive(data)
             }
         }
         process.terminationHandler = { process in
-            if process.terminationStatus == 0 {
-                bridge.finish()
-            } else {
-                bridge.finish(
-                    throwing: ProcessJSONLTransportError.processExited(
-                        process.terminationStatus
-                    )
-                )
-            }
+            outputLifecycle.processDidExit(status: process.terminationStatus)
         }
 
-        let stream = bridge.stream
+        let stream = outputLifecycle.stream
         let mailbox = mailbox
         consumerTask = Task {
             do {
@@ -175,7 +229,7 @@ public actor ProcessJSONLTransport: AppServerTransport {
             try process.run()
         } catch {
             outputPipe.fileHandleForReading.readabilityHandler = nil
-            bridge.finish(throwing: error)
+            outputLifecycle.fail(error)
             throw error
         }
         self.process = process
@@ -214,7 +268,7 @@ public actor ProcessJSONLTransport: AppServerTransport {
         if process?.isRunning == true {
             process?.terminate()
         }
-        bridge.finish()
+        outputLifecycle.stop()
         consumerTask?.cancel()
         await mailbox.finish()
     }
