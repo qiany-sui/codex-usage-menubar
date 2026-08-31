@@ -8,6 +8,34 @@ func fixtureLines(named name:String) throws -> [Data] { guard let url=Bundle.mod
 func fixtureLine(named name:String) throws -> Data { guard let first=try fixtureLines(named:name).first else { throw TestSupportError.missingFixture(name) }; return first }
 func date(_ text:String) throws -> Date { let formatter=ISO8601DateFormatter(); formatter.formatOptions=[.withInternetDateTime,.withFractionalSeconds]; if let value=formatter.date(from:text){return value}; formatter.formatOptions=[.withInternetDateTime]; guard let value=formatter.date(from:text) else { throw TestSupportError.invalidDate(text) }; return value }
 
+func tokenLine(
+    timestamp: String,
+    input: Int64,
+    cached: Int64,
+    output: Int64
+) -> String {
+    let object: [String: Any] = [
+        "timestamp": timestamp,
+        "type": "event_msg",
+        "payload": [
+            "type": "token_count",
+            "info": [
+                "last_token_usage": [
+                    "input_tokens": input,
+                    "cached_input_tokens": cached,
+                    "output_tokens": output,
+                    "reasoning_output_tokens": 0
+                ]
+            ]
+        ]
+    ]
+    let data = try! JSONSerialization.data(
+        withJSONObject: object,
+        options: [.sortedKeys]
+    )
+    return String(decoding: data, as: UTF8.self)
+}
+
 func XCTAssertThrowsErrorAsync<T>(
     _ expression: @autoclosure () async throws -> T,
     file: StaticString = #filePath,
