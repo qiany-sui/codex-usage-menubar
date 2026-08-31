@@ -19,6 +19,13 @@ final class DomainModelsTests: XCTestCase {
         XCTAssertEqual(negative.remainingPercent, 100)
     }
 
+    func testQuotaRemainingPercentReturnsComplementForNormalUsage() {
+        let date = Date(timeIntervalSince1970: 0)
+        let quota = QuotaSnapshot(limitID: "x", usedPercent: 40, windowDurationMinutes: 60, startsAt: date, resetsAt: date, fetchedAt: date)
+
+        XCTAssertEqual(quota.remainingPercent, 60)
+    }
+
     func testTotalTokensCountsInputAndOutputOnly() {
         let usage = TokenBreakdown(
             inputTokens: 100,
