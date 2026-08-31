@@ -1,0 +1,8 @@
+import Foundation
+enum TestSupportError: Error { case missingFixture(String); case invalidDate(String) }
+func temporaryDirectory() throws -> URL { let url=FileManager.default.temporaryDirectory.appendingPathComponent("CodexUsageTests-"+UUID().uuidString,isDirectory:true); try FileManager.default.createDirectory(at:url,withIntermediateDirectories:true); return url }
+func temporaryDatabaseURL() throws -> URL { try temporaryDirectory().appendingPathComponent("usage.sqlite3") }
+func temporaryCodexHome() throws -> URL { let root=try temporaryDirectory(); for name in ["sessions","archived_sessions"] { try FileManager.default.createDirectory(at:root.appendingPathComponent(name),withIntermediateDirectories:true) }; return root }
+func fixtureLines(named name:String) throws -> [Data] { guard let url=Bundle.module.url(forResource:name,withExtension:"jsonl",subdirectory:"Fixtures") else { throw TestSupportError.missingFixture(name) }; return try Data(contentsOf:url).split(separator:0x0A).map(Data.init) }
+func fixtureLine(named name:String) throws -> Data { guard let first=try fixtureLines(named:name).first else { throw TestSupportError.missingFixture(name) }; return first }
+func date(_ text:String) throws -> Date { let formatter=ISO8601DateFormatter(); formatter.formatOptions=[.withInternetDateTime,.withFractionalSeconds]; if let value=formatter.date(from:text){return value}; formatter.formatOptions=[.withInternetDateTime]; guard let value=formatter.date(from:text) else { throw TestSupportError.invalidDate(text) }; return value }

@@ -1,1 +1,6 @@
 .worktrees/
+.build/
+.swiftpm/
+DerivedData/
+*.xcuserstate
+.DS_Store
