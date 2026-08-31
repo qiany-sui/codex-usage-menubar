@@ -77,29 +77,23 @@ public actor SQLiteUsageStore: UsageStore {
             throw validationFailure(operation: "validate event")
         }
         return try connection.transaction {
-            let statement = try connection.prepare(
-                """
-                INSERT OR IGNORE INTO usage_events (
-                  signature, occurred_at, local_day, input_tokens,
-                  cached_input_tokens, output_tokens
-                ) VALUES (?, ?, ?, ?, ?, ?);
-                """,
-                operation: "insert event"
-            )
-            var inserted = 0
-            for event in events {
-                try statement.bind(event.signature, at: 1)
-                try statement.bind(event.occurredAt.timeIntervalSince1970, at: 2)
-                try statement.bind(event.localDay.iso8601, at: 3)
-                try statement.bind(event.usage.inputTokens, at: 4)
-                try statement.bind(event.usage.cachedInputTokens, at: 5)
-                try statement.bind(event.usage.outputTokens, at: 6)
-                guard try statement.step() == .done else {
-                    throw corruption(operation: "insert event")
-                }
-                inserted += try connection.changes()
-                try statement.reset()
-            }
+            try insertEvents(events)
+        }
+    }
+
+    public func ingest(
+        events: [StoredUsageEvent],
+        cursor: FileCursor
+    ) throws -> Int {
+        guard events.allSatisfy(isValidEvent) else {
+            throw validationFailure(operation: "validate event")
+        }
+        guard isValidCursor(cursor) else {
+            throw validationFailure(operation: "validate cursor")
+        }
+        return try connection.transaction {
+            let inserted = try insertEvents(events)
+            try upsertCursor(cursor)
             return inserted
         }
     }
@@ -189,6 +183,37 @@ public actor SQLiteUsageStore: UsageStore {
         guard isValidCursor(cursor) else {
             throw validationFailure(operation: "validate cursor")
         }
+        try upsertCursor(cursor)
+    }
+
+    private func insertEvents(_ events: [StoredUsageEvent]) throws -> Int {
+        let statement = try connection.prepare(
+            """
+            INSERT OR IGNORE INTO usage_events (
+              signature, occurred_at, local_day, input_tokens,
+              cached_input_tokens, output_tokens
+            ) VALUES (?, ?, ?, ?, ?, ?);
+            """,
+            operation: "insert event"
+        )
+        var inserted = 0
+        for event in events {
+            try statement.bind(event.signature, at: 1)
+            try statement.bind(event.occurredAt.timeIntervalSince1970, at: 2)
+            try statement.bind(event.localDay.iso8601, at: 3)
+            try statement.bind(event.usage.inputTokens, at: 4)
+            try statement.bind(event.usage.cachedInputTokens, at: 5)
+            try statement.bind(event.usage.outputTokens, at: 6)
+            guard try statement.step() == .done else {
+                throw corruption(operation: "insert event")
+            }
+            inserted += try connection.changes()
+            try statement.reset()
+        }
+        return inserted
+    }
+
+    private func upsertCursor(_ cursor: FileCursor) throws {
         let statement = try connection.prepare(
             """
             INSERT INTO file_cursors (

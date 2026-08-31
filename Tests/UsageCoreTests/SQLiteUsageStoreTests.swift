@@ -82,6 +82,88 @@ final class SQLiteUsageStoreTests: XCTestCase {
         XCTAssertEqual(reopenedCursor, cursor)
     }
 
+    func testAtomicIngestPersistsEventsAndCursorTogether() async throws {
+        let databaseURL = try databaseURLWithCleanup()
+        let store = try SQLiteUsageStore(databaseURL: databaseURL)
+        try await store.migrate()
+        let event = storedEvent(
+            at: Date(timeIntervalSince1970: 100),
+            input: 10,
+            cached: 4,
+            output: 2
+        )
+        let cursor = FileCursor(
+            pathHash: Data(repeating: 3, count: 32),
+            deviceID: 1,
+            inode: 2,
+            committedOffset: 100,
+            counterState: SessionCounterState(previousTotal: nil)
+        )
+
+        let inserted = try await store.ingest(events: [event], cursor: cursor)
+        let savedEvents = try await store.events(
+            from: Date(timeIntervalSince1970: 0),
+            to: Date(timeIntervalSince1970: 200)
+        )
+        let savedCursor = try await store.cursor(for: cursor.pathHash)
+
+        XCTAssertEqual(inserted, 1)
+        XCTAssertEqual(savedEvents, [event])
+        XCTAssertEqual(savedCursor, cursor)
+    }
+
+    func testAtomicIngestRollsBackEventWhenCursorUpsertFails() async throws {
+        let databaseURL = try databaseURLWithCleanup()
+        let store = try SQLiteUsageStore(databaseURL: databaseURL)
+        try await store.migrate()
+        let event = storedEvent(
+            at: Date(timeIntervalSince1970: 100),
+            input: 10,
+            cached: 4,
+            output: 2
+        )
+        let cursor = FileCursor(
+            pathHash: Data(repeating: 4, count: 32),
+            deviceID: 1,
+            inode: 2,
+            committedOffset: 100,
+            counterState: SessionCounterState(previousTotal: nil)
+        )
+        let previousCursor = FileCursor(
+            pathHash: cursor.pathHash,
+            deviceID: 8,
+            inode: 9,
+            committedOffset: 10,
+            counterState: SessionCounterState(previousTotal: nil)
+        )
+        try await store.save(cursor: previousCursor)
+        do {
+            let fixture = try SQLiteConnection(databaseURL: databaseURL)
+            try fixture.execute(
+                """
+                CREATE TRIGGER reject_test_cursor
+                BEFORE UPDATE ON file_cursors
+                BEGIN
+                  SELECT RAISE(ABORT, 'reject test cursor');
+                END;
+                """,
+                operation: "test fixture"
+            )
+        }
+
+        await XCTAssertThrowsErrorAsync(
+            try await store.ingest(events: [event], cursor: cursor)
+        ) { _ in }
+        let events = try await store.events(
+            from: Date(timeIntervalSince1970: 0),
+            to: Date(timeIntervalSince1970: 200)
+        )
+        let savedCursor = try await store.cursor(for: cursor.pathHash)
+
+        XCTAssertEqual(events, [])
+        XCTAssertEqual(savedCursor, previousCursor)
+    }
+
     func testOfficialQuotaAndCyclesSurviveDatabaseReopen() async throws {
         let databaseURL = try databaseURLWithCleanup()
         let fetchedAt = Date(timeIntervalSince1970: 1_788_148_800)
