@@ -17,7 +17,10 @@ public struct SessionUsageAccumulator: Sendable {
         if let lastUsage = record.lastUsage {
             usage = lastUsage
         } else if let totalUsage = record.totalUsage {
-            usage = delta(current: totalUsage, previous: state.previousTotal)
+            usage = try delta(
+                current: totalUsage,
+                previous: state.previousTotal
+            )
         } else {
             return nil
         }
@@ -35,7 +38,7 @@ public struct SessionUsageAccumulator: Sendable {
     private func delta(
         current: TokenBreakdown,
         previous: TokenBreakdown?
-    ) -> TokenBreakdown {
+    ) throws -> TokenBreakdown {
         guard let previous else {
             return current
         }
@@ -44,11 +47,15 @@ public struct SessionUsageAccumulator: Sendable {
               current.outputTokens >= previous.outputTokens else {
             return current
         }
-        return TokenBreakdown(
+        let difference = TokenBreakdown(
             inputTokens: current.inputTokens - previous.inputTokens,
             cachedInputTokens: current.cachedInputTokens - previous.cachedInputTokens,
             outputTokens: current.outputTokens - previous.outputTokens
         )
+        guard difference.cachedInputTokens <= difference.inputTokens else {
+            throw SessionUsageAccumulatorError.invalidTotalTransition
+        }
+        return difference
     }
 
     private func signature(for record: SessionTokenRecord) -> Data {

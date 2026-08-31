@@ -42,3 +42,7 @@ public struct SessionCounterState: Codable, Equatable, Sendable {
 public enum SessionParseError: Error, Equatable, Sendable {
     case invalidTokenEvent
 }
+
+public enum SessionUsageAccumulatorError: Error, Equatable, Sendable {
+    case invalidTotalTransition
+}

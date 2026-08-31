@@ -4,24 +4,36 @@ public struct SessionLineParser: Sendable {
     public init() {}
 
     public func parse(line: Data) throws -> SessionTokenRecord? {
-        let envelope: SessionLineEnvelope
+        let routing: SessionRoutingEnvelope
         do {
-            envelope = try JSONDecoder().decode(SessionLineEnvelope.self, from: line)
+            routing = try JSONDecoder().decode(
+                SessionRoutingEnvelope.self,
+                from: line
+            )
         } catch {
             throw SessionParseError.invalidTokenEvent
         }
 
-        guard envelope.type == "event_msg",
-              envelope.payload?.type == "token_count" else {
+        guard routing.type == "event_msg",
+              routing.payload?.type == "token_count" else {
             return nil
         }
-        guard let timestamp = envelope.timestamp,
+        let tokenEvent: SessionTokenEnvelope
+        do {
+            tokenEvent = try JSONDecoder().decode(
+                SessionTokenEnvelope.self,
+                from: line
+            )
+        } catch {
+            throw SessionParseError.invalidTokenEvent
+        }
+        guard let timestamp = tokenEvent.timestamp,
               let occurredAt = parseTimestamp(timestamp) else {
             throw SessionParseError.invalidTokenEvent
         }
 
-        let lastUsage = try envelope.payload?.info?.lastTokenUsage.map(tokenBreakdown)
-        let totalUsage = try envelope.payload?.info?.totalTokenUsage.map(tokenBreakdown)
+        let lastUsage = try tokenEvent.payload?.info?.lastTokenUsage.map(tokenBreakdown)
+        let totalUsage = try tokenEvent.payload?.info?.totalTokenUsage.map(tokenBreakdown)
         let schemaVariant = schemaVariant(
             lastUsage: lastUsage,
             totalUsage: totalUsage
@@ -36,11 +48,12 @@ public struct SessionLineParser: Sendable {
     }
 
     private func tokenBreakdown(
-        from usage: SessionLineEnvelope.TokenUsage
+        from usage: SessionTokenEnvelope.TokenUsage
     ) throws -> TokenBreakdown {
         guard usage.inputTokens >= 0,
               usage.cachedInputTokens >= 0,
               usage.outputTokens >= 0,
+              (usage.reasoningOutputTokens ?? 0) >= 0,
               usage.cachedInputTokens <= usage.inputTokens else {
             throw SessionParseError.invalidTokenEvent
         }
@@ -79,13 +92,20 @@ public struct SessionLineParser: Sendable {
     }
 }
 
-private struct SessionLineEnvelope: Decodable {
-    let timestamp: String?
+private struct SessionRoutingEnvelope: Decodable {
     let type: String?
     let payload: Payload?
 
     struct Payload: Decodable {
         let type: String?
+    }
+}
+
+private struct SessionTokenEnvelope: Decodable {
+    let timestamp: String?
+    let payload: Payload?
+
+    struct Payload: Decodable {
         let info: Info?
     }
 
