@@ -134,6 +134,83 @@ actor RecordingSessionIndexer: SessionUsageIndexing {
     func modifiedSince() -> Date? { recordedModifiedSince }
 }
 
+struct StoreSideEffectCounts: Equatable, Sendable {
+    let migrations: Int
+    let writes: Int
+}
+
+actor ReadOnlyUsageStoreSpy: UsageStore {
+    private let storedEvents: [StoredUsageEvent]
+    private let storedOfficialDays: [OfficialUsageDay]
+    private let storedQuota: QuotaSnapshot?
+    private let storedCycles: [QuotaCycle]
+    private var migrationCount = 0
+    private var writeCount = 0
+
+    init(
+        events: [StoredUsageEvent] = [],
+        officialDays: [OfficialUsageDay] = [],
+        quota: QuotaSnapshot? = nil,
+        cycles: [QuotaCycle] = []
+    ) {
+        storedEvents = events
+        storedOfficialDays = officialDays
+        storedQuota = quota
+        storedCycles = cycles
+    }
+
+    func migrate() throws { migrationCount += 1 }
+
+    func insert(events: [StoredUsageEvent]) throws -> Int {
+        writeCount += 1
+        return events.count
+    }
+
+    func ingest(
+        events: [StoredUsageEvent],
+        cursor: FileCursor
+    ) throws -> Int {
+        writeCount += 1
+        return events.count
+    }
+
+    func events(from: Date, to: Date) throws -> [StoredUsageEvent] {
+        storedEvents.filter { from <= $0.occurredAt && $0.occurredAt < to }
+    }
+
+    func cursor(for pathHash: Data) throws -> FileCursor? { nil }
+
+    func save(cursor: FileCursor) throws { writeCount += 1 }
+
+    func upsert(officialDays: [OfficialUsageDay]) throws {
+        writeCount += 1
+    }
+
+    func officialDays() throws -> [OfficialUsageDay] { storedOfficialDays }
+
+    func save(quota: QuotaSnapshot) throws { writeCount += 1 }
+
+    func latestQuota() throws -> QuotaSnapshot? { storedQuota }
+
+    func replace(cycles: [QuotaCycle]) throws { writeCount += 1 }
+
+    func cycles() throws -> [QuotaCycle] { storedCycles }
+
+    func pruneUsage(
+        eventsBefore: Date,
+        officialDaysBefore: LocalDay
+    ) throws {
+        writeCount += 1
+    }
+
+    func sideEffectCounts() -> StoreSideEffectCounts {
+        StoreSideEffectCounts(
+            migrations: migrationCount,
+            writes: writeCount
+        )
+    }
+}
+
 actor InitializationGateAccountClient: AccountUsageReading {
     private let initialized: InitializeResult
     private let limits: RateLimitsResponse
@@ -402,6 +479,9 @@ final class UsageServiceTests: XCTestCase {
                 now: baselineNow.addingTimeInterval(1)
             )
         }
+        await waitUntilOperationQueueDepth(1, service: service)
+        let depthBeforeCancellation = await service.operationQueueDepth()
+        XCTAssertEqual(depthBeforeCancellation, 1)
         second.cancel()
         let thirdCompleted = expectation(description: "third refresh completes")
         let third = Task {
@@ -412,6 +492,9 @@ final class UsageServiceTests: XCTestCase {
             thirdCompleted.fulfill()
             return snapshot
         }
+        await waitUntilOperationQueueDepth(2, service: service)
+        let depthBeforeRelease = await service.operationQueueDepth()
+        XCTAssertEqual(depthBeforeRelease, 2)
 
         await client.openInitializationGate()
         _ = try await first.value
@@ -420,6 +503,8 @@ final class UsageServiceTests: XCTestCase {
         }
         await fulfillment(of: [thirdCompleted], timeout: 2)
         _ = try await third.value
+        let finalDepth = await service.operationQueueDepth()
+        XCTAssertEqual(finalDepth, 0)
     }
 
     func testConcurrentNotificationsMergeInQueueOrder() async throws {
@@ -840,6 +925,16 @@ final class UsageServiceTests: XCTestCase {
     func testCurrentSnapshotDoesNotInitializeIndexOrReadNetwork() async throws {
         let codexHome = try temporaryCodexHome()
         let store = try SQLiteUsageStore(databaseURL: try temporaryDatabaseURL())
+        try await store.migrate()
+        let storedQuota = QuotaSnapshot(
+            limitID: "codex",
+            usedPercent: 25,
+            windowDurationMinutes: 10_080,
+            startsAt: now.addingTimeInterval(-3 * 24 * 60 * 60),
+            resetsAt: now.addingTimeInterval(4 * 24 * 60 * 60),
+            fetchedAt: now.addingTimeInterval(-10)
+        )
+        try await store.save(quota: storedQuota)
         let client = FakeAccountUsageClient(
             initialized: InitializeResult(
                 codexHome: codexHome.path,
@@ -862,12 +957,49 @@ final class UsageServiceTests: XCTestCase {
         let clientCounts = await client.callCounts()
         let indexCalls = await indexer.calls()
 
-        XCTAssertEqual(snapshot.status, .unavailable)
+        XCTAssertEqual(snapshot.quota, storedQuota)
         XCTAssertEqual(clientCounts.initialize, 0)
         XCTAssertEqual(clientCounts.limits, 0)
         XCTAssertEqual(clientCounts.usage, 0)
         XCTAssertEqual(clientCounts.notification, 0)
         XCTAssertEqual(indexCalls, 0)
+    }
+
+    func testCurrentSnapshotDoesNotMigrateOrWriteStore() async throws {
+        let codexHome = try temporaryCodexHome()
+        let storedQuota = QuotaSnapshot(
+            limitID: "codex",
+            usedPercent: 25,
+            windowDurationMinutes: 10_080,
+            startsAt: now.addingTimeInterval(-3 * 24 * 60 * 60),
+            resetsAt: now.addingTimeInterval(4 * 24 * 60 * 60),
+            fetchedAt: now.addingTimeInterval(-10)
+        )
+        let store = ReadOnlyUsageStoreSpy(quota: storedQuota)
+        let service = makeService(
+            accountClient: FakeAccountUsageClient(
+                initialized: InitializeResult(
+                    codexHome: codexHome.path,
+                    platformFamily: "unix",
+                    platformOs: "macos",
+                    userAgent: "test"
+                ),
+                limits: ServiceFixture.fullLimits,
+                usage: ServiceFixture.fullUsage
+            ),
+            indexer: CountingSessionIndexer(),
+            store: store,
+            codexHome: codexHome
+        )
+
+        let snapshot = try await service.currentSnapshot(now: now)
+        let sideEffects = await store.sideEffectCounts()
+
+        XCTAssertEqual(snapshot.quota, storedQuota)
+        XCTAssertEqual(
+            sideEffects,
+            StoreSideEffectCounts(migrations: 0, writes: 0)
+        )
     }
 
     func testNineRetainedCyclesPruneOnlyUsageBeforeEarliestCycle() async throws {
@@ -1210,5 +1342,14 @@ final class UsageServiceTests: XCTestCase {
             message: "authentication required",
             data: nil
         )
+    }
+
+    private func waitUntilOperationQueueDepth(
+        _ expectedDepth: Int,
+        service: UsageService
+    ) async {
+        while await service.operationQueueDepth() < expectedDepth {
+            await Task.yield()
+        }
     }
 }

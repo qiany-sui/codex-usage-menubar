@@ -245,7 +245,6 @@ public actor UsageService {
     }
 
     private func currentSnapshotLocked(now: Date) async throws -> UsageSnapshot {
-        try await migrateIfNeeded()
         return try await buildSnapshot(now: now, updateCycles: false)
     }
 
@@ -265,6 +264,10 @@ public actor UsageService {
             return
         }
         operationWaiters.removeFirst().resume()
+    }
+
+    func operationQueueDepth() -> Int {
+        operationWaiters.count
     }
 
     private func migrateIfNeeded() async throws {
