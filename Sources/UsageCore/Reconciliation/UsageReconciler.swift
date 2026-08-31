@@ -107,12 +107,28 @@ public struct UsageReconciler: Sendable {
     private func latestOfficialDays(
         _ officialDays: [OfficialUsageDay]
     ) -> [LocalDay: OfficialUsageDay] {
-        officialDays.reduce(into: [:]) { result, day in
-            if let existing = result[day.day],
-               existing.fetchedAt >= day.fetchedAt {
+        Dictionary(grouping: officialDays, by: \.day).reduce(into: [:]) {
+            result,
+            entry in
+            let (day, candidates) = entry
+            guard let latestFetchedAt = candidates.map(\.fetchedAt).max()
+            else {
                 return
             }
-            result[day.day] = day
+            let latestTokens = Set(
+                candidates
+                    .filter { $0.fetchedAt == latestFetchedAt }
+                    .map(\.tokens)
+            )
+            guard latestTokens.count == 1,
+                  let tokens = latestTokens.first else {
+                return
+            }
+            result[day] = OfficialUsageDay(
+                day: day,
+                tokens: tokens,
+                fetchedAt: latestFetchedAt
+            )
         }
     }
 
@@ -124,33 +140,60 @@ public struct UsageReconciler: Sendable {
         events: [StoredUsageEvent],
         officialByDay: [LocalDay: OfficialUsageDay]
     ) -> QuotaCycle {
-        let localByDay = events.reduce(into: [LocalDay: TokenBreakdown]()) {
+        let cycleEvents = events.filter {
+            cycle.startsAt <= $0.occurredAt && $0.occurredAt < cycle.endsAt
+        }
+        let localByDay = cycleEvents.reduce(
+            into: [LocalDay: TokenBreakdown]()
+        ) {
             result,
             event in
-            guard cycle.startsAt <= event.occurredAt,
-                  event.occurredAt < cycle.endsAt else {
-                return
-            }
             result[event.localDay] = addingClamped(
                 result[event.localDay] ?? .zero,
                 event.usage
             )
         }
+        let aggregate = cycleEvents.reduce(into: TokenBreakdown.zero) {
+            result,
+            event in
+            result = addingClamped(result, event.usage)
+        }
+        guard aggregate == cycle.usage else {
+            return QuotaCycle(
+                startsAt: cycle.startsAt,
+                endsAt: cycle.endsAt,
+                usage: cycle.usage,
+                displayedTokens: totalTokensClamped(cycle.usage),
+                status: .partiallyCalibrated,
+                boundaryIsEstimated: cycle.boundaryIsEstimated
+            )
+        }
+
         let completeDays = completeNaturalDays(
             in: cycle,
             before: min(todayStart, calendar.startOfDay(for: now)),
             calendar: calendar
         )
-        var displayedTokens = totalTokensClamped(cycle.usage)
+        let completeDaySet = Set(completeDays)
+        let accumulatedDays = Set(localByDay.keys).union(
+            completeDays.filter { officialByDay[$0] != nil }
+        )
+        var displayedTokens: Int64 = 0
         var replacedDayCount = 0
-        for day in completeDays {
-            guard let official = officialByDay[day] else { continue }
-            displayedTokens = subtractingClamped(
-                displayedTokens,
-                totalTokensClamped(localByDay[day] ?? .zero)
-            )
-            displayedTokens = addingClamped(displayedTokens, official.tokens)
-            replacedDayCount += 1
+        for day in accumulatedDays.sorted() {
+            if completeDaySet.contains(day),
+               let official = officialByDay[day] {
+                displayedTokens = addingClamped(
+                    displayedTokens,
+                    official.tokens
+                )
+                replacedDayCount += 1
+            } else {
+                displayedTokens = addingClamped(
+                    displayedTokens,
+                    totalTokensClamped(localByDay[day] ?? .zero)
+                )
+            }
         }
 
         let hasPartialBoundary = cycle.startsAt != calendar.startOfDay(
@@ -231,7 +274,7 @@ public struct UsageReconciler: Sendable {
     ) -> UsageCalibrationStatus {
         guard let quota else { return .unavailable }
         let age = now.timeIntervalSince(quota.fetchedAt)
-        guard age.isFinite, age <= 600 else { return .stale }
+        guard age.isFinite, abs(age) <= 600 else { return .stale }
 
         let statuses = [today.status, currentCycle?.status].compactMap { $0 }
         return statuses.min { statusStrength($0) < statusStrength($1) }
@@ -252,12 +295,6 @@ public struct UsageReconciler: Sendable {
             -2
         }
     }
-}
-
-private func subtractingClamped(_ lhs: Int64, _ rhs: Int64) -> Int64 {
-    let (difference, overflow) = lhs.subtractingReportingOverflow(rhs)
-    guard overflow else { return difference }
-    return rhs >= 0 ? .min : .max
 }
 
 private func addingClamped(_ lhs: Int64, _ rhs: Int64) -> Int64 {

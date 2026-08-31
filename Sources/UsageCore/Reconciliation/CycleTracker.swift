@@ -8,7 +8,7 @@ public struct CycleTracker: Sendable {
         quota: QuotaSnapshot,
         events: [StoredUsageEvent]
     ) -> [QuotaCycle] {
-        var cycles = existing.sorted { $0.startsAt < $1.startsAt }
+        var cycles = normalized(existing)
 
         if let current = cycles.last {
             let startDifference = quota.startsAt.timeIntervalSince(
@@ -26,7 +26,7 @@ public struct CycleTracker: Sendable {
             } else if startDifference > 1 {
                 cycles[cycles.count - 1] = QuotaCycle(
                     startsAt: current.startsAt,
-                    endsAt: quota.startsAt,
+                    endsAt: min(current.endsAt, quota.startsAt),
                     usage: current.usage,
                     displayedTokens: current.displayedTokens,
                     status: current.status,
@@ -77,6 +77,60 @@ public struct CycleTracker: Sendable {
         }
 
         return Array(cycles.sorted { $0.startsAt < $1.startsAt }.suffix(9))
+    }
+
+    private func normalized(_ existing: [QuotaCycle]) -> [QuotaCycle] {
+        let sorted = existing.sorted {
+            if $0.startsAt != $1.startsAt {
+                return $0.startsAt < $1.startsAt
+            }
+            if $0.endsAt != $1.endsAt {
+                return $0.endsAt < $1.endsAt
+            }
+            return !$0.boundaryIsEstimated && $1.boundaryIsEstimated
+        }
+        var merged: [QuotaCycle] = []
+        for candidate in sorted {
+            if let current = merged.last,
+               candidate.startsAt.timeIntervalSince(current.startsAt) <= 1 {
+                merged[merged.count - 1] = QuotaCycle(
+                    startsAt: current.startsAt,
+                    endsAt: max(current.endsAt, candidate.endsAt),
+                    usage: .zero,
+                    displayedTokens: 0,
+                    status: .localLive,
+                    boundaryIsEstimated: current.boundaryIsEstimated
+                        || candidate.boundaryIsEstimated
+                )
+            } else {
+                merged.append(
+                    QuotaCycle(
+                        startsAt: candidate.startsAt,
+                        endsAt: candidate.endsAt,
+                        usage: .zero,
+                        displayedTokens: 0,
+                        status: .localLive,
+                        boundaryIsEstimated: candidate.boundaryIsEstimated
+                    )
+                )
+            }
+        }
+
+        guard merged.count > 1 else { return merged }
+        for index in merged.indices.dropLast() {
+            let nextStart = merged[merged.index(after: index)].startsAt
+            guard merged[index].endsAt > nextStart else { continue }
+            let cycle = merged[index]
+            merged[index] = QuotaCycle(
+                startsAt: cycle.startsAt,
+                endsAt: nextStart,
+                usage: .zero,
+                displayedTokens: 0,
+                status: .localLive,
+                boundaryIsEstimated: cycle.boundaryIsEstimated
+            )
+        }
+        return merged
     }
 }
 

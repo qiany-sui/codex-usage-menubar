@@ -163,14 +163,131 @@ final class CycleTrackerTests: XCTestCase {
         XCTAssertEqual(cycles.single?.displayedTokens, .max)
     }
 
-    private func cycle(startsAt: Date, endsAt: Date) -> QuotaCycle {
+    func testNormalizesUnsortedDuplicateAndOverlappingCycles() {
+        let firstStart = Date(timeIntervalSince1970: 1_000)
+        let secondStart = Date(timeIntervalSince1970: 2_100)
+        let thirdStart = Date(timeIntervalSince1970: 4_000)
+        let existing = [
+            cycle(
+                startsAt: thirdStart,
+                endsAt: Date(timeIntervalSince1970: 5_000)
+            ),
+            cycle(
+                startsAt: firstStart.addingTimeInterval(0.5),
+                endsAt: Date(timeIntervalSince1970: 2_200),
+                boundaryIsEstimated: true
+            ),
+            cycle(
+                startsAt: secondStart,
+                endsAt: Date(timeIntervalSince1970: 3_000)
+            ),
+            cycle(
+                startsAt: firstStart,
+                endsAt: Date(timeIntervalSince1970: 2_000)
+            )
+        ]
+
+        let cycles = CycleTracker().update(
+            existing: existing,
+            quota: quota(
+                startsAt: thirdStart,
+                endsAt: Date(timeIntervalSince1970: 5_000)
+            ),
+            events: []
+        )
+
+        XCTAssertEqual(cycles.count, 3)
+        XCTAssertEqual(cycles.map(\.startsAt), [
+            firstStart,
+            secondStart,
+            thirdStart
+        ])
+        XCTAssertEqual(
+            cycles[0].endsAt,
+            secondStart,
+            "overlap must be truncated to the next start"
+        )
+        XCTAssertTrue(cycles[0].boundaryIsEstimated)
+        XCTAssertEqual(
+            cycles[1].endsAt,
+            Date(timeIntervalSince1970: 3_000),
+            "an existing gap must not be expanded"
+        )
+    }
+
+    func testNormalizationDoesNotDependOnExistingOrder() {
+        let firstStart = Date(timeIntervalSince1970: 1_000)
+        let secondStart = Date(timeIntervalSince1970: 2_100)
+        let thirdStart = Date(timeIntervalSince1970: 4_000)
+        let existing = [
+            cycle(
+                startsAt: firstStart.addingTimeInterval(0.5),
+                endsAt: Date(timeIntervalSince1970: 2_200),
+                boundaryIsEstimated: true
+            ),
+            cycle(
+                startsAt: thirdStart,
+                endsAt: Date(timeIntervalSince1970: 5_000)
+            ),
+            cycle(
+                startsAt: firstStart,
+                endsAt: Date(timeIntervalSince1970: 2_000)
+            ),
+            cycle(
+                startsAt: secondStart,
+                endsAt: Date(timeIntervalSince1970: 3_000)
+            )
+        ]
+        let quota = quota(
+            startsAt: thirdStart,
+            endsAt: Date(timeIntervalSince1970: 5_000)
+        )
+
+        let forward = CycleTracker().update(
+            existing: existing,
+            quota: quota,
+            events: []
+        )
+        let reversed = CycleTracker().update(
+            existing: Array(existing.reversed()),
+            quota: quota,
+            events: []
+        )
+
+        XCTAssertEqual(forward, reversed)
+    }
+
+    func testNewQuotaCycleDoesNotExpandExistingGap() {
+        let start = Date(timeIntervalSince1970: 1_000)
+        let existingEnd = Date(timeIntervalSince1970: 2_000)
+        let quotaStart = Date(timeIntervalSince1970: 3_000)
+
+        let cycles = CycleTracker().update(
+            existing: [cycle(startsAt: start, endsAt: existingEnd)],
+            quota: quota(
+                startsAt: quotaStart,
+                endsAt: Date(timeIntervalSince1970: 4_000)
+            ),
+            events: []
+        )
+
+        XCTAssertEqual(cycles.count, 2)
+        XCTAssertEqual(cycles[0].endsAt, existingEnd)
+        XCTAssertEqual(cycles[1].startsAt, quotaStart)
+    }
+
+    private func cycle(
+        startsAt: Date,
+        endsAt: Date,
+        boundaryIsEstimated: Bool = false
+    ) -> QuotaCycle {
         QuotaCycle(
             startsAt: startsAt,
             endsAt: endsAt,
             usage: .zero,
             displayedTokens: 0,
             status: .localLive,
-            boundaryIsEstimated: false
+            boundaryIsEstimated: boundaryIsEstimated
         )
     }
 

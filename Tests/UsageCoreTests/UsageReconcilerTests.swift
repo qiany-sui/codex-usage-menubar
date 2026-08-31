@@ -277,6 +277,185 @@ final class UsageReconcilerTests: XCTestCase {
         )
     }
 
+    func testCycleSkipsOfficialReplacementWhenEventsExceedStoredUsage() throws {
+        let calendar = shanghaiCalendar()
+        let startsAt = try date("2026-08-28T00:00:00+08:00")
+        let endsAt = try date("2026-09-04T00:00:00+08:00")
+        let now = try date("2026-08-29T12:00:00+08:00")
+        let day = LocalDay(year: 2026, month: 8, day: 28)
+        let event = event(
+            at: try date("2026-08-28T13:00:00+08:00"),
+            day: day,
+            input: 100,
+            output: 0
+        )
+
+        let snapshot = UsageReconciler().snapshot(
+            now: now,
+            calendar: calendar,
+            quota: quotaSnapshot(
+                startsAt: startsAt,
+                endsAt: endsAt,
+                fetchedAt: now
+            ),
+            events: [event],
+            officialDays: [
+                OfficialUsageDay(day: day, tokens: 50, fetchedAt: now)
+            ],
+            cycles: [
+                quotaCycle(
+                    startsAt: startsAt,
+                    endsAt: endsAt,
+                    usage: .zero
+                )
+            ],
+            lastUpdatedAt: now
+        )
+
+        XCTAssertEqual(snapshot.currentCycle?.displayedTokens, 0)
+        XCTAssertEqual(
+            snapshot.currentCycle?.status,
+            .partiallyCalibrated
+        )
+    }
+
+    func testCycleSkipsOfficialReplacementWhenStoredUsageHasNoEvents() throws {
+        let calendar = shanghaiCalendar()
+        let startsAt = try date("2026-08-28T00:00:00+08:00")
+        let endsAt = try date("2026-09-04T00:00:00+08:00")
+        let now = try date("2026-08-29T12:00:00+08:00")
+        let day = LocalDay(year: 2026, month: 8, day: 28)
+        let usage = TokenBreakdown(
+            inputTokens: 100,
+            cachedInputTokens: 0,
+            outputTokens: 0
+        )
+
+        let snapshot = UsageReconciler().snapshot(
+            now: now,
+            calendar: calendar,
+            quota: quotaSnapshot(
+                startsAt: startsAt,
+                endsAt: endsAt,
+                fetchedAt: now
+            ),
+            events: [],
+            officialDays: [
+                OfficialUsageDay(day: day, tokens: 50, fetchedAt: now)
+            ],
+            cycles: [
+                quotaCycle(
+                    startsAt: startsAt,
+                    endsAt: endsAt,
+                    usage: usage
+                )
+            ],
+            lastUpdatedAt: now
+        )
+
+        XCTAssertEqual(snapshot.currentCycle?.displayedTokens, 100)
+        XCTAssertEqual(
+            snapshot.currentCycle?.status,
+            .partiallyCalibrated
+        )
+    }
+
+    func testCycleReplacementAccumulatesExtremeValuesWithoutGoingNegative() throws {
+        let calendar = shanghaiCalendar()
+        let startsAt = try date("2026-08-28T00:00:00+08:00")
+        let endsAt = try date("2026-09-04T00:00:00+08:00")
+        let now = try date("2026-08-30T12:00:00+08:00")
+        let firstDay = LocalDay(year: 2026, month: 8, day: 28)
+        let secondDay = LocalDay(year: 2026, month: 8, day: 29)
+        let events = [
+            event(
+                at: try date("2026-08-28T13:00:00+08:00"),
+                day: firstDay,
+                input: .max,
+                output: 0
+            ),
+            event(
+                at: try date("2026-08-29T13:00:00+08:00"),
+                day: secondDay,
+                input: 1,
+                output: 0
+            )
+        ]
+        let usage = TokenBreakdown(
+            inputTokens: .max,
+            cachedInputTokens: 0,
+            outputTokens: 0
+        )
+
+        let snapshot = UsageReconciler().snapshot(
+            now: now,
+            calendar: calendar,
+            quota: quotaSnapshot(
+                startsAt: startsAt,
+                endsAt: endsAt,
+                fetchedAt: now
+            ),
+            events: events,
+            officialDays: [firstDay, secondDay].map {
+                OfficialUsageDay(day: $0, tokens: 0, fetchedAt: now)
+            },
+            cycles: [
+                quotaCycle(
+                    startsAt: startsAt,
+                    endsAt: endsAt,
+                    usage: usage
+                )
+            ],
+            lastUpdatedAt: now
+        )
+
+        XCTAssertEqual(snapshot.currentCycle?.displayedTokens, 0)
+        XCTAssertEqual(snapshot.currentCycle?.status, .calibrated)
+    }
+
+    func testOfficialFullDayCanReplaceZeroLocalUsage() throws {
+        let calendar = shanghaiCalendar()
+        let startsAt = try date("2026-08-28T00:00:00+08:00")
+        let endsAt = try date("2026-09-04T00:00:00+08:00")
+        let now = try date("2026-08-29T12:00:00+08:00")
+        let today = LocalDay(year: 2026, month: 8, day: 29)
+        let event = event(
+            at: try date("2026-08-29T10:00:00+08:00"),
+            day: today,
+            input: 10,
+            output: 0
+        )
+
+        let snapshot = UsageReconciler().snapshot(
+            now: now,
+            calendar: calendar,
+            quota: quotaSnapshot(
+                startsAt: startsAt,
+                endsAt: endsAt,
+                fetchedAt: now
+            ),
+            events: [event],
+            officialDays: [
+                OfficialUsageDay(
+                    day: LocalDay(year: 2026, month: 8, day: 28),
+                    tokens: 50,
+                    fetchedAt: now
+                )
+            ],
+            cycles: [
+                quotaCycle(
+                    startsAt: startsAt,
+                    endsAt: endsAt,
+                    usage: event.usage
+                )
+            ],
+            lastUpdatedAt: now
+        )
+
+        XCTAssertEqual(snapshot.currentCycle?.displayedTokens, 60)
+        XCTAssertEqual(snapshot.currentCycle?.status, .calibrated)
+    }
+
     func testOnlyFullIntermediateDayUsesOfficialTokens() throws {
         let calendar = shanghaiCalendar()
         let startsAt = try date("2026-08-28T12:00:00+08:00")
@@ -459,6 +638,139 @@ final class UsageReconcilerTests: XCTestCase {
         XCTAssertEqual(snapshot.status, .stale)
     }
 
+    func testQuotaFreshnessUsesAbsoluteTenMinuteBoundary() throws {
+        let calendar = shanghaiCalendar()
+        let now = try date("2026-08-31T12:00:00+08:00")
+        let startsAt = try date("2026-08-28T12:00:00+08:00")
+        let endsAt = try date("2026-09-04T12:00:00+08:00")
+        let cycle = quotaCycle(
+            startsAt: startsAt,
+            endsAt: endsAt,
+            usage: .zero
+        )
+        let fixtures: [(offset: TimeInterval, expected: UsageCalibrationStatus)] = [
+            (-600, .partiallyCalibrated),
+            (600, .partiallyCalibrated),
+            (-601, .stale),
+            (601, .stale)
+        ]
+
+        for fixture in fixtures {
+            let snapshot = UsageReconciler().snapshot(
+                now: now,
+                calendar: calendar,
+                quota: quotaSnapshot(
+                    startsAt: startsAt,
+                    endsAt: endsAt,
+                    fetchedAt: now.addingTimeInterval(fixture.offset)
+                ),
+                events: [],
+                officialDays: [],
+                cycles: [cycle],
+                lastUpdatedAt: now
+            )
+
+            XCTAssertEqual(
+                snapshot.status,
+                fixture.expected,
+                "offset: \(fixture.offset)"
+            )
+        }
+    }
+
+    func testNonFiniteQuotaFetchDateIsStale() throws {
+        let calendar = shanghaiCalendar()
+        let now = try date("2026-08-31T12:00:00+08:00")
+
+        let snapshot = UsageReconciler().snapshot(
+            now: now,
+            calendar: calendar,
+            quota: quotaSnapshot(
+                startsAt: now.addingTimeInterval(-100),
+                endsAt: now.addingTimeInterval(100),
+                fetchedAt: Date(timeIntervalSince1970: .nan)
+            ),
+            events: [],
+            officialDays: [],
+            cycles: [],
+            lastUpdatedAt: now
+        )
+
+        XCTAssertEqual(snapshot.status, .stale)
+    }
+
+    func testLatestOfficialDayIsOrderIndependentForDayAndCycle() throws {
+        let fixture = try officialDuplicateFixture()
+        let older = OfficialUsageDay(
+            day: fixture.day,
+            tokens: 40,
+            fetchedAt: fixture.now.addingTimeInterval(-10)
+        )
+        let latest = OfficialUsageDay(
+            day: fixture.day,
+            tokens: 50,
+            fetchedAt: fixture.now
+        )
+
+        let forward = fixture.snapshot(officialDays: [older, latest])
+        let reversed = fixture.snapshot(officialDays: [latest, older])
+
+        XCTAssertEqual(forward, reversed)
+        XCTAssertEqual(
+            forward.recentDays.first { $0.day == fixture.day }?.displayedTokens,
+            50
+        )
+        XCTAssertEqual(forward.currentCycle?.displayedTokens, 50)
+        XCTAssertEqual(forward.currentCycle?.status, .calibrated)
+    }
+
+    func testConflictingLatestOfficialDayIsRejectedIndependentOfOrder() throws {
+        let fixture = try officialDuplicateFixture()
+        let first = OfficialUsageDay(
+            day: fixture.day,
+            tokens: 50,
+            fetchedAt: fixture.now
+        )
+        let conflicting = OfficialUsageDay(
+            day: fixture.day,
+            tokens: 60,
+            fetchedAt: fixture.now
+        )
+
+        let forward = fixture.snapshot(officialDays: [first, conflicting])
+        let reversed = fixture.snapshot(officialDays: [conflicting, first])
+
+        XCTAssertEqual(forward, reversed)
+        XCTAssertEqual(
+            forward.recentDays.first { $0.day == fixture.day }?.displayedTokens,
+            20
+        )
+        XCTAssertEqual(
+            forward.recentDays.first { $0.day == fixture.day }?.status,
+            .localLive
+        )
+        XCTAssertEqual(forward.currentCycle?.displayedTokens, 20)
+        XCTAssertEqual(forward.currentCycle?.status, .localLive)
+    }
+
+    func testEqualLatestOfficialDuplicatesStillCalibrate() throws {
+        let fixture = try officialDuplicateFixture()
+        let duplicate = OfficialUsageDay(
+            day: fixture.day,
+            tokens: 50,
+            fetchedAt: fixture.now
+        )
+
+        let snapshot = fixture.snapshot(officialDays: [duplicate, duplicate])
+
+        XCTAssertEqual(
+            snapshot.recentDays.first { $0.day == fixture.day }?.displayedTokens,
+            50
+        )
+        XCTAssertEqual(snapshot.currentCycle?.displayedTokens, 50)
+        XCTAssertEqual(snapshot.currentCycle?.status, .calibrated)
+    }
+
     private func shanghaiCalendar() -> Calendar {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
@@ -516,6 +828,36 @@ final class UsageReconcilerTests: XCTestCase {
         )
     }
 
+    private func officialDuplicateFixture() throws -> OfficialDuplicateFixture {
+        let calendar = shanghaiCalendar()
+        let startsAt = try date("2026-08-28T00:00:00+08:00")
+        let endsAt = try date("2026-09-04T00:00:00+08:00")
+        let now = try date("2026-08-29T12:00:00+08:00")
+        let day = LocalDay(year: 2026, month: 8, day: 28)
+        let event = event(
+            at: try date("2026-08-28T13:00:00+08:00"),
+            day: day,
+            input: 20,
+            output: 0
+        )
+        return OfficialDuplicateFixture(
+            calendar: calendar,
+            now: now,
+            day: day,
+            event: event,
+            quota: quotaSnapshot(
+                startsAt: startsAt,
+                endsAt: endsAt,
+                fetchedAt: now
+            ),
+            cycle: quotaCycle(
+                startsAt: startsAt,
+                endsAt: endsAt,
+                usage: event.usage
+            )
+        )
+    }
+
     private func addingForFixture(
         _ lhs: TokenBreakdown,
         _ rhs: TokenBreakdown
@@ -524,6 +866,27 @@ final class UsageReconcilerTests: XCTestCase {
             inputTokens: lhs.inputTokens + rhs.inputTokens,
             cachedInputTokens: lhs.cachedInputTokens + rhs.cachedInputTokens,
             outputTokens: lhs.outputTokens + rhs.outputTokens
+        )
+    }
+}
+
+private struct OfficialDuplicateFixture {
+    let calendar: Calendar
+    let now: Date
+    let day: LocalDay
+    let event: StoredUsageEvent
+    let quota: QuotaSnapshot
+    let cycle: QuotaCycle
+
+    func snapshot(officialDays: [OfficialUsageDay]) -> UsageSnapshot {
+        UsageReconciler().snapshot(
+            now: now,
+            calendar: calendar,
+            quota: quota,
+            events: [event],
+            officialDays: officialDays,
+            cycles: [cycle],
+            lastUpdatedAt: now
         )
     }
 }
