@@ -18,6 +18,9 @@
 		A00000000000000000000048 /* TestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000037 /* TestSupport.swift */; };
 		A00000000000000000000049 /* CodexHomeBookmarkStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000038 /* CodexHomeBookmarkStoreTests.swift */; };
 		A0000000000000000000004A /* CodexHomeBookmarkStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000039 /* CodexHomeBookmarkStore.swift */; };
+		A0000000000000000000004B /* UsageRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000003A /* UsageRuntime.swift */; };
+		A0000000000000000000004C /* AppContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000003B /* AppContainer.swift */; };
+		A0000000000000000000004D /* AppContainerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000003C /* AppContainerTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -43,6 +46,9 @@
 		A00000000000000000000037 /* TestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TestSupport.swift; sourceTree = "<group>"; };
 		A00000000000000000000038 /* CodexHomeBookmarkStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexHomeBookmarkStoreTests.swift; sourceTree = "<group>"; };
 		A00000000000000000000039 /* CodexHomeBookmarkStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexHomeBookmarkStore.swift; sourceTree = "<group>"; };
+		A0000000000000000000003A /* UsageRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageRuntime.swift; sourceTree = "<group>"; };
+		A0000000000000000000003B /* AppContainer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppContainer.swift; sourceTree = "<group>"; };
+		A0000000000000000000003C /* AppContainerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppContainerTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -79,6 +85,8 @@
 			children = (
 				A00000000000000000000030 /* CodexUsageApp.swift */,
 				A00000000000000000000039 /* CodexHomeBookmarkStore.swift */,
+				A0000000000000000000003A /* UsageRuntime.swift */,
+				A0000000000000000000003B /* AppContainer.swift */,
 				A00000000000000000000035 /* UsageFormatters.swift */,
 				A00000000000000000000036 /* UsageTheme.swift */,
 				A00000000000000000000032 /* Assets.xcassets */,
@@ -94,6 +102,7 @@
 				A00000000000000000000034 /* UsageFormattersTests.swift */,
 				A00000000000000000000037 /* TestSupport.swift */,
 				A00000000000000000000038 /* CodexHomeBookmarkStoreTests.swift */,
+				A0000000000000000000003C /* AppContainerTests.swift */,
 			);
 			path = CodexUsageTests;
 			sourceTree = "<group>";
@@ -218,6 +227,8 @@
 			files = (
 				A00000000000000000000040 /* CodexUsageApp.swift in Sources */,
 				A0000000000000000000004A /* CodexHomeBookmarkStore.swift in Sources */,
+				A0000000000000000000004B /* UsageRuntime.swift in Sources */,
+				A0000000000000000000004C /* AppContainer.swift in Sources */,
 				A00000000000000000000046 /* UsageFormatters.swift in Sources */,
 				A00000000000000000000047 /* UsageTheme.swift in Sources */,
 			);
@@ -231,6 +242,7 @@
 				A00000000000000000000045 /* UsageFormattersTests.swift in Sources */,
 				A00000000000000000000048 /* TestSupport.swift in Sources */,
 				A00000000000000000000049 /* CodexHomeBookmarkStoreTests.swift in Sources */,
+				A0000000000000000000004D /* AppContainerTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
