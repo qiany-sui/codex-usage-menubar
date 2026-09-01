@@ -53,6 +53,39 @@ public struct OfficialUsageDay: Codable, Equatable, Sendable {
     }
 }
 
+public enum UsageRefreshFailureSource: String, Codable, Hashable, Sendable {
+    case accountInitialization
+    case rateLimits
+    case officialUsage
+    case sessionIndexing
+}
+
+public struct UsageRefreshState: Codable, Equatable, Sendable {
+    public let lastSuccessfulQuotaRefreshAt: Date?
+    public let lastSuccessfulOfficialUsageRefreshAt: Date?
+    public let consecutiveFailureCount: Int
+    public let failedSources: Set<UsageRefreshFailureSource>
+
+    public init(
+        lastSuccessfulQuotaRefreshAt: Date?,
+        lastSuccessfulOfficialUsageRefreshAt: Date?,
+        consecutiveFailureCount: Int,
+        failedSources: Set<UsageRefreshFailureSource>
+    ) {
+        self.lastSuccessfulQuotaRefreshAt = lastSuccessfulQuotaRefreshAt
+        self.lastSuccessfulOfficialUsageRefreshAt = lastSuccessfulOfficialUsageRefreshAt
+        self.consecutiveFailureCount = consecutiveFailureCount
+        self.failedSources = failedSources
+    }
+
+    public static let empty = UsageRefreshState(
+        lastSuccessfulQuotaRefreshAt: nil,
+        lastSuccessfulOfficialUsageRefreshAt: nil,
+        consecutiveFailureCount: 0,
+        failedSources: []
+    )
+}
+
 public protocol UsageStore: Actor {
     func close() throws
     func migrate() throws
@@ -65,6 +98,8 @@ public protocol UsageStore: Actor {
     func officialDays() throws -> [OfficialUsageDay]
     func save(quota: QuotaSnapshot) throws
     func latestQuota() throws -> QuotaSnapshot?
+    func save(refreshState: UsageRefreshState) throws
+    func refreshState() throws -> UsageRefreshState
     func replace(cycles: [QuotaCycle]) throws
     func cycles() throws -> [QuotaCycle]
     func pruneUsage(

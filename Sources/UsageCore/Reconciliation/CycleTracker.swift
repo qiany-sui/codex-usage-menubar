@@ -21,7 +21,7 @@ public struct CycleTracker: Sendable {
                     usage: current.usage,
                     displayedTokens: current.displayedTokens,
                     status: current.status,
-                    boundaryIsEstimated: current.boundaryIsEstimated
+                    boundaryIsEstimated: false
                 )
             } else if startDifference > 1 {
                 cycles[cycles.count - 1] = QuotaCycle(
@@ -54,6 +54,25 @@ public struct CycleTracker: Sendable {
                     boundaryIsEstimated: false
                 )
             )
+        }
+
+        if (9_000...11_000).contains(quota.windowDurationMinutes) {
+            let duration = TimeInterval(quota.windowDurationMinutes) * 60
+            while cycles.count < 9, let earliest = cycles.first {
+                let startsAt = earliest.startsAt.addingTimeInterval(-duration)
+                guard startsAt.timeIntervalSince1970.isFinite else { break }
+                cycles.insert(
+                    QuotaCycle(
+                        startsAt: startsAt,
+                        endsAt: earliest.startsAt,
+                        usage: .zero,
+                        displayedTokens: 0,
+                        status: .localLive,
+                        boundaryIsEstimated: true
+                    ),
+                    at: 0
+                )
+            }
         }
 
         cycles = cycles.map { cycle in
@@ -100,7 +119,7 @@ public struct CycleTracker: Sendable {
                     displayedTokens: 0,
                     status: .localLive,
                     boundaryIsEstimated: current.boundaryIsEstimated
-                        || candidate.boundaryIsEstimated
+                        && candidate.boundaryIsEstimated
                 )
             } else {
                 merged.append(

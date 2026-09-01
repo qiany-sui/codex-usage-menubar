@@ -144,6 +144,7 @@ actor ReadOnlyUsageStoreSpy: UsageStore {
     private let storedOfficialDays: [OfficialUsageDay]
     private let storedQuota: QuotaSnapshot?
     private let storedCycles: [QuotaCycle]
+    private var storedRefreshState: UsageRefreshState
     private var migrationCount = 0
     private var writeCount = 0
 
@@ -151,12 +152,14 @@ actor ReadOnlyUsageStoreSpy: UsageStore {
         events: [StoredUsageEvent] = [],
         officialDays: [OfficialUsageDay] = [],
         quota: QuotaSnapshot? = nil,
-        cycles: [QuotaCycle] = []
+        cycles: [QuotaCycle] = [],
+        refreshState: UsageRefreshState = .empty
     ) {
         storedEvents = events
         storedOfficialDays = officialDays
         storedQuota = quota
         storedCycles = cycles
+        storedRefreshState = refreshState
     }
 
     func close() throws {}
@@ -193,6 +196,13 @@ actor ReadOnlyUsageStoreSpy: UsageStore {
     func save(quota: QuotaSnapshot) throws { writeCount += 1 }
 
     func latestQuota() throws -> QuotaSnapshot? { storedQuota }
+
+    func save(refreshState: UsageRefreshState) throws {
+        writeCount += 1
+        storedRefreshState = refreshState
+    }
+
+    func refreshState() throws -> UsageRefreshState { storedRefreshState }
 
     func replace(cycles: [QuotaCycle]) throws { writeCount += 1 }
 
@@ -318,6 +328,59 @@ actor NotificationGateAccountClient: AccountUsageReading {
     }
 
     func notificationCount() -> Int { notificationCalls }
+}
+
+actor ParkedNotificationAccountClient: AccountUsageReading {
+    private let initialized: InitializeResult
+    private let limits: RateLimitsResponse
+    private let usage: AccountUsageResponse
+    private var initializeCalls = 0
+    private var notificationCalls = 0
+    private var notificationStartedAfterInitialization = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var notificationWaiter: CheckedContinuation<AppServerNotification?, Never>?
+
+    init(
+        initialized: InitializeResult,
+        limits: RateLimitsResponse,
+        usage: AccountUsageResponse
+    ) {
+        self.initialized = initialized
+        self.limits = limits
+        self.usage = usage
+    }
+
+    func initialize() async throws -> InitializeResult {
+        initializeCalls += 1
+        return initialized
+    }
+
+    func readRateLimits() async throws -> RateLimitsResponse { limits }
+    func readAccountUsage() async throws -> AccountUsageResponse { usage }
+
+    func nextNotification() async -> AppServerNotification? {
+        notificationCalls += 1
+        notificationStartedAfterInitialization = initializeCalls > 0
+        let waiters = startWaiters
+        startWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+        return await withCheckedContinuation { notificationWaiter = $0 }
+    }
+
+    func waitUntilNotificationStarts() async {
+        guard notificationCalls == 0 else { return }
+        await withCheckedContinuation { startWaiters.append($0) }
+    }
+
+    func enqueue(_ notification: AppServerNotification) {
+        let waiter = notificationWaiter
+        notificationWaiter = nil
+        waiter?.resume(returning: notification)
+    }
+
+    func didInitializeBeforeListening() -> Bool {
+        notificationStartedAfterInitialization
+    }
 }
 
 struct ServiceFixture {
@@ -566,6 +629,63 @@ final class UsageServiceTests: XCTestCase {
         XCTAssertEqual(finalCount, 2)
     }
 
+    func testParkedNotificationReadDoesNotBlockRefreshOrCurrentSnapshot() async throws {
+        let baselineNow = now
+        let codexHome = try temporaryCodexHome()
+        let store = try SQLiteUsageStore(databaseURL: try temporaryDatabaseURL())
+        let client = ParkedNotificationAccountClient(
+            initialized: InitializeResult(
+                codexHome: codexHome.path,
+                platformFamily: "unix",
+                platformOs: "macos",
+                userAgent: "test"
+            ),
+            limits: ServiceFixture.fullLimits,
+            usage: ServiceFixture.fullUsage
+        )
+        let service = makeService(
+            accountClient: client,
+            indexer: CountingSessionIndexer(),
+            store: store,
+            codexHome: codexHome
+        )
+        let notification = Task {
+            try await service.processNextAccountNotification(now: baselineNow)
+        }
+        await client.waitUntilNotificationStarts()
+
+        let refreshFinished = expectation(description: "refresh finishes while notification waits")
+        let refresh = Task {
+            let snapshot = try await service.refresh(
+                reason: .sessionFilesChanged,
+                now: baselineNow.addingTimeInterval(1)
+            )
+            refreshFinished.fulfill()
+            return snapshot
+        }
+        let snapshotFinished = expectation(
+            description: "current snapshot finishes while notification waits"
+        )
+        let current = Task {
+            let snapshot = try await service.currentSnapshot(
+                now: baselineNow.addingTimeInterval(1)
+            )
+            snapshotFinished.fulfill()
+            return snapshot
+        }
+
+        await fulfillment(of: [refreshFinished, snapshotFinished], timeout: 1)
+        let initializedBeforeListening = await client.didInitializeBeforeListening()
+        XCTAssertTrue(initializedBeforeListening)
+
+        await client.enqueue(
+            .rateLimitsUpdated(try rateLimitUpdate(usedPercent: 31))
+        )
+        _ = try await refresh.value
+        _ = try await current.value
+        _ = try await notification.value
+    }
+
     func testRefreshPersistsRemoteDataIndexesSessionsAndBuildsSnapshot() async throws {
         let fixture = try await ServiceFixture.make()
 
@@ -579,7 +699,59 @@ final class UsageServiceTests: XCTestCase {
         XCTAssertEqual(snapshot.quota?.remainingPercent, 75)
         XCTAssertEqual(snapshot.today.displayedTokens, 120)
         XCTAssertEqual(officialDays.first?.tokens, 400)
-        XCTAssertEqual(cycles.count, 1)
+        XCTAssertEqual(cycles.count, 9)
+    }
+
+    func testFirstRefreshPersistsNineCyclesAndIndexesFromOldestEstimatedBoundary() async throws {
+        let codexHome = try temporaryCodexHome()
+        let store = try SQLiteUsageStore(databaseURL: try temporaryDatabaseURL())
+        let currentStart = now.addingTimeInterval(-3 * 24 * 60 * 60)
+        let duration = TimeInterval(10_080 * 60)
+        let client = FakeAccountUsageClient(
+            initialized: InitializeResult(
+                codexHome: codexHome.path,
+                platformFamily: "unix",
+                platformOs: "macos",
+                userAgent: "test"
+            ),
+            limits: RateLimitsResponse(
+                rateLimits: RateLimitBucket(
+                    limitId: "codex",
+                    limitName: nil,
+                    primary: RateLimitWindow(
+                        usedPercent: 25,
+                        windowDurationMins: 10_080,
+                        resetsAt: Int64(
+                            currentStart.addingTimeInterval(duration)
+                                .timeIntervalSince1970
+                        )
+                    ),
+                    secondary: nil
+                ),
+                rateLimitsByLimitId: nil
+            ),
+            usage: ServiceFixture.fullUsage
+        )
+        let indexer = RecordingSessionIndexer()
+        let service = makeService(
+            accountClient: client,
+            indexer: indexer,
+            store: store,
+            codexHome: codexHome
+        )
+
+        let snapshot = try await service.refresh(reason: .startup, now: now)
+        let cycles = try await store.cycles()
+        let modifiedSince = await indexer.modifiedSince()
+
+        XCTAssertEqual(cycles.count, 9)
+        XCTAssertEqual(snapshot.cycleHistory.count, 8)
+        XCTAssertTrue(cycles.dropLast().allSatisfy(\.boundaryIsEstimated))
+        XCTAssertFalse(cycles.last?.boundaryIsEstimated ?? true)
+        XCTAssertEqual(
+            modifiedSince,
+            currentStart.addingTimeInterval(-8 * duration)
+        )
     }
 
     func testRemoteFailureKeepsLastQuotaAndMarksSnapshotStale() async throws {
@@ -602,6 +774,112 @@ final class UsageServiceTests: XCTestCase {
         XCTAssertEqual(snapshot.quota?.remainingPercent, 75)
         XCTAssertEqual(snapshot.status, .stale)
         XCTAssertEqual(officialDays.count, 1)
+    }
+
+    func testRemoteFailureKeepsCurrentSnapshotStale() async throws {
+        let fixture = try await ServiceFixture.make()
+        _ = try await fixture.service.refresh(reason: .startup, now: now)
+        await fixture.accountClient.setRateLimitsFailure(rpcFailure())
+        _ = try await fixture.service.refresh(
+            reason: .manual,
+            now: now.addingTimeInterval(1)
+        )
+
+        let snapshot = try await fixture.service.currentSnapshot(
+            now: now.addingTimeInterval(2)
+        )
+
+        XCTAssertEqual(snapshot.status, .stale)
+    }
+
+    func testSessionOnlySuccessDoesNotClearRateLimitFailure() async throws {
+        let fixture = try await ServiceFixture.make()
+        _ = try await fixture.service.refresh(reason: .startup, now: now)
+        await fixture.accountClient.setRateLimitsFailure(rpcFailure())
+        _ = try await fixture.service.refresh(
+            reason: .manual,
+            now: now.addingTimeInterval(1)
+        )
+        await fixture.accountClient.setRateLimitsFailure(nil)
+
+        let snapshot = try await fixture.service.refresh(
+            reason: .sessionFilesChanged,
+            now: now.addingTimeInterval(2)
+        )
+
+        XCTAssertEqual(snapshot.status, .stale)
+    }
+
+    func testReopenedServiceKeepsPersistedRemoteFailureStale() async throws {
+        let codexHome = try temporaryCodexHome()
+        let databaseURL = try temporaryDatabaseURL()
+        let store = try SQLiteUsageStore(databaseURL: databaseURL)
+        let client = FakeAccountUsageClient(
+            initialized: InitializeResult(
+                codexHome: codexHome.path,
+                platformFamily: "unix",
+                platformOs: "macos",
+                userAgent: "test"
+            ),
+            limits: ServiceFixture.fullLimits,
+            usage: ServiceFixture.fullUsage
+        )
+        let service = makeService(
+            accountClient: client,
+            indexer: CountingSessionIndexer(),
+            store: store,
+            codexHome: codexHome
+        )
+        _ = try await service.refresh(reason: .startup, now: now)
+        await client.setRateLimitsFailure(rpcFailure())
+        _ = try await service.refresh(
+            reason: .manual,
+            now: now.addingTimeInterval(1)
+        )
+        try await store.close()
+
+        let reopenedStore = try SQLiteUsageStore(databaseURL: databaseURL)
+        let reopenedService = makeService(
+            accountClient: FakeAccountUsageClient(
+                initialized: InitializeResult(
+                    codexHome: codexHome.path,
+                    platformFamily: "unix",
+                    platformOs: "macos",
+                    userAgent: "test"
+                ),
+                limits: ServiceFixture.fullLimits,
+                usage: ServiceFixture.fullUsage
+            ),
+            indexer: CountingSessionIndexer(),
+            store: reopenedStore,
+            codexHome: codexHome
+        )
+
+        let snapshot = try await reopenedService.currentSnapshot(
+            now: now.addingTimeInterval(2)
+        )
+
+        XCTAssertEqual(snapshot.status, .stale)
+    }
+
+    func testMatchingRemoteSuccessClearsPersistedFailure() async throws {
+        let fixture = try await ServiceFixture.make()
+        _ = try await fixture.service.refresh(reason: .startup, now: now)
+        await fixture.accountClient.setRateLimitsFailure(rpcFailure())
+        _ = try await fixture.service.refresh(
+            reason: .manual,
+            now: now.addingTimeInterval(1)
+        )
+        await fixture.accountClient.setRateLimitsFailure(nil)
+
+        let snapshot = try await fixture.service.refresh(
+            reason: .manual,
+            now: now.addingTimeInterval(2)
+        )
+        let state = try await fixture.store.refreshState()
+
+        XCTAssertNotEqual(snapshot.status, .stale)
+        XCTAssertFalse(state.failedSources.contains(.rateLimits))
     }
 
     func testQuotaSuccessSurvivesOfficialFailureAndMarksImmediateStale() async throws {
@@ -773,7 +1051,7 @@ final class UsageServiceTests: XCTestCase {
         let counts = await fixture.accountClient.callCounts()
 
         XCTAssertEqual(snapshot?.quota?.remainingPercent, 75)
-        XCTAssertEqual(counts.initialize, 0)
+        XCTAssertEqual(counts.initialize, 1)
         XCTAssertEqual(counts.limits, 1)
     }
 
@@ -1130,7 +1408,7 @@ final class UsageServiceTests: XCTestCase {
         XCTAssertEqual(retainedCycles.first?.usage.outputTokens, 3)
     }
 
-    func testExpandedCycleReadDoesNotExpandIndexerScanWindow() async throws {
+    func testIndexerScanWindowRespectsOlderStoredCycleBoundary() async throws {
         let codexHome = try temporaryCodexHome()
         let store = try SQLiteUsageStore(databaseURL: try temporaryDatabaseURL())
         try await store.migrate()
@@ -1166,7 +1444,7 @@ final class UsageServiceTests: XCTestCase {
 
         XCTAssertEqual(
             cutoff,
-            now.addingTimeInterval(-56 * 24 * 60 * 60)
+            oldCycle.startsAt
         )
     }
 

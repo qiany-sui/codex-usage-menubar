@@ -76,6 +76,22 @@ public actor SQLiteUsageStore: UsageStore {
                   status TEXT NOT NULL,
                   boundary_is_estimated INTEGER NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS refresh_state (
+                  singleton_id INTEGER PRIMARY KEY NOT NULL CHECK(singleton_id = 1),
+                  last_successful_quota_refresh_at REAL,
+                  last_successful_official_usage_refresh_at REAL,
+                  consecutive_failure_count INTEGER NOT NULL
+                    CHECK(consecutive_failure_count >= 0),
+                  account_initialization_failed INTEGER NOT NULL
+                    CHECK(account_initialization_failed IN (0, 1)),
+                  rate_limits_failed INTEGER NOT NULL
+                    CHECK(rate_limits_failed IN (0, 1)),
+                  official_usage_failed INTEGER NOT NULL
+                    CHECK(official_usage_failed IN (0, 1)),
+                  session_indexing_failed INTEGER NOT NULL
+                    CHECK(session_indexing_failed IN (0, 1))
+                );
                 """,
                 operation: "migrate schema"
             )
@@ -387,6 +403,112 @@ public actor SQLiteUsageStore: UsageStore {
         return quota
     }
 
+    public func save(refreshState: UsageRefreshState) throws {
+        let connection = try requireConnection()
+        guard isValidRefreshState(refreshState) else {
+            throw validationFailure(operation: "validate refresh state")
+        }
+        let statement = try connection.prepare(
+            """
+            INSERT INTO refresh_state (
+              singleton_id, last_successful_quota_refresh_at,
+              last_successful_official_usage_refresh_at,
+              consecutive_failure_count, account_initialization_failed,
+              rate_limits_failed, official_usage_failed, session_indexing_failed
+            ) VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(singleton_id) DO UPDATE SET
+              last_successful_quota_refresh_at = excluded.last_successful_quota_refresh_at,
+              last_successful_official_usage_refresh_at =
+                excluded.last_successful_official_usage_refresh_at,
+              consecutive_failure_count = excluded.consecutive_failure_count,
+              account_initialization_failed = excluded.account_initialization_failed,
+              rate_limits_failed = excluded.rate_limits_failed,
+              official_usage_failed = excluded.official_usage_failed,
+              session_indexing_failed = excluded.session_indexing_failed;
+            """,
+            operation: "save refresh state"
+        )
+        if let date = refreshState.lastSuccessfulQuotaRefreshAt {
+            try statement.bind(date.timeIntervalSince1970, at: 1)
+        } else {
+            try statement.bindNull(at: 1)
+        }
+        if let date = refreshState.lastSuccessfulOfficialUsageRefreshAt {
+            try statement.bind(date.timeIntervalSince1970, at: 2)
+        } else {
+            try statement.bindNull(at: 2)
+        }
+        try statement.bind(Int64(refreshState.consecutiveFailureCount), at: 3)
+        try statement.bind(
+            refreshState.failedSources.contains(.accountInitialization) ? Int64(1) : 0,
+            at: 4
+        )
+        try statement.bind(
+            refreshState.failedSources.contains(.rateLimits) ? Int64(1) : 0,
+            at: 5
+        )
+        try statement.bind(
+            refreshState.failedSources.contains(.officialUsage) ? Int64(1) : 0,
+            at: 6
+        )
+        try statement.bind(
+            refreshState.failedSources.contains(.sessionIndexing) ? Int64(1) : 0,
+            at: 7
+        )
+        guard try statement.step() == .done else {
+            throw corruption(operation: "save refresh state")
+        }
+    }
+
+    public func refreshState() throws -> UsageRefreshState {
+        let connection = try requireConnection()
+        let statement = try connection.prepare(
+            """
+            SELECT last_successful_quota_refresh_at,
+                   last_successful_official_usage_refresh_at,
+                   consecutive_failure_count, account_initialization_failed,
+                   rate_limits_failed, official_usage_failed,
+                   session_indexing_failed
+            FROM refresh_state WHERE singleton_id = 1;
+            """,
+            operation: "read refresh state"
+        )
+        guard try statement.step() == .row else {
+            return .empty
+        }
+        let quotaTimestamp = try statement.optionalDouble(at: 0)
+        let officialTimestamp = try statement.optionalDouble(at: 1)
+        guard let failureCount = Int(exactly: try statement.int64(at: 2)) else {
+            throw corruption(operation: "read refresh state")
+        }
+        let flags = try (3...6).map { try statement.int64(at: Int32($0)) }
+        guard flags.allSatisfy({ $0 == 0 || $0 == 1 }) else {
+            throw corruption(operation: "read refresh state")
+        }
+        var failedSources: Set<UsageRefreshFailureSource> = []
+        let sources: [UsageRefreshFailureSource] = [
+            .accountInitialization,
+            .rateLimits,
+            .officialUsage,
+            .sessionIndexing
+        ]
+        for (flag, source) in zip(flags, sources) where flag == 1 {
+            failedSources.insert(source)
+        }
+        let state = UsageRefreshState(
+            lastSuccessfulQuotaRefreshAt: quotaTimestamp.map(Date.init(timeIntervalSince1970:)),
+            lastSuccessfulOfficialUsageRefreshAt: officialTimestamp.map(
+                Date.init(timeIntervalSince1970:)
+            ),
+            consecutiveFailureCount: failureCount,
+            failedSources: failedSources
+        )
+        guard isValidRefreshState(state) else {
+            throw corruption(operation: "read refresh state")
+        }
+        return state
+    }
+
     public func replace(cycles: [QuotaCycle]) throws {
         _ = try requireConnection()
         guard cycles.count <= 9 else {
@@ -530,6 +652,12 @@ public actor SQLiteUsageStore: UsageStore {
             && isFinite(quota.startsAt)
             && isFinite(quota.resetsAt)
             && isFinite(quota.fetchedAt)
+    }
+
+    private func isValidRefreshState(_ state: UsageRefreshState) -> Bool {
+        state.consecutiveFailureCount >= 0
+            && (state.lastSuccessfulQuotaRefreshAt.map(isFinite) ?? true)
+            && (state.lastSuccessfulOfficialUsageRefreshAt.map(isFinite) ?? true)
     }
 
     private func isValidCycle(_ cycle: QuotaCycle) -> Bool {

@@ -3,6 +3,79 @@ import XCTest
 @testable import UsageCore
 
 final class SQLiteUsageStoreTests: XCTestCase {
+    func testRefreshStateSurvivesDatabaseReopenWithoutRawErrorText() async throws {
+        let databaseURL = try databaseURLWithCleanup()
+        let state = UsageRefreshState(
+            lastSuccessfulQuotaRefreshAt: Date(timeIntervalSince1970: 100),
+            lastSuccessfulOfficialUsageRefreshAt: Date(timeIntervalSince1970: 200),
+            consecutiveFailureCount: 3,
+            failedSources: [.rateLimits, .officialUsage]
+        )
+
+        do {
+            let store = try SQLiteUsageStore(databaseURL: databaseURL)
+            try await store.migrate()
+            try await store.save(refreshState: state)
+        }
+        let reopened = try SQLiteUsageStore(databaseURL: databaseURL)
+        try await reopened.migrate()
+        let saved = try await reopened.refreshState()
+
+        XCTAssertEqual(saved, state)
+        XCTAssertNil(
+            try JSONEncoder().encode(saved).range(
+                of: Data("authentication required".utf8)
+            )
+        )
+    }
+
+    func testVersionOneDatabaseReceivesRefreshStateTableIdempotently() async throws {
+        let databaseURL = try databaseURLWithCleanup()
+        do {
+            let connection = try SQLiteConnection(databaseURL: databaseURL)
+            try connection.execute(
+                "PRAGMA user_version = 1;",
+                operation: "create version one fixture"
+            )
+        }
+        let store = try SQLiteUsageStore(databaseURL: databaseURL)
+
+        try await store.migrate()
+        try await store.migrate()
+        let state = try await store.refreshState()
+
+        XCTAssertEqual(state, .empty)
+    }
+
+    func testInvalidRefreshStateIsRejectedWithFixedValidationError() async throws {
+        let store = try SQLiteUsageStore(databaseURL: try databaseURLWithCleanup())
+        try await store.migrate()
+        let invalidStates = [
+            UsageRefreshState(
+                lastSuccessfulQuotaRefreshAt: Date(timeIntervalSince1970: .nan),
+                lastSuccessfulOfficialUsageRefreshAt: nil,
+                consecutiveFailureCount: 0,
+                failedSources: []
+            ),
+            UsageRefreshState(
+                lastSuccessfulQuotaRefreshAt: nil,
+                lastSuccessfulOfficialUsageRefreshAt: nil,
+                consecutiveFailureCount: -1,
+                failedSources: [.officialUsage]
+            )
+        ]
+
+        for state in invalidStates {
+            await assertSQLiteError(
+                try await store.save(refreshState: state),
+                operation: "validate refresh state",
+                code: 275
+            )
+        }
+        let storedState = try await store.refreshState()
+        XCTAssertEqual(storedState, .empty)
+    }
+
     func testDuplicateSignatureIsInsertedOnlyOnce() async throws {
         let databaseURL = try databaseURLWithCleanup()
         let store = try SQLiteUsageStore(databaseURL: databaseURL)

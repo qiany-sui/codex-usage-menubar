@@ -164,6 +164,12 @@ final class PrivacyBoundaryTests: XCTestCase {
             status: .localLive,
             boundaryIsEstimated: false
         )
+        let refreshState = UsageRefreshState(
+            lastSuccessfulQuotaRefreshAt: eventDate,
+            lastSuccessfulOfficialUsageRefreshAt: eventDate,
+            consecutiveFailureCount: 1,
+            failedSources: [.rateLimits]
+        )
 
         await assertClosed(try await store.migrate())
         await assertClosed(try await store.insert(events: [event]))
@@ -177,6 +183,8 @@ final class PrivacyBoundaryTests: XCTestCase {
         await assertClosed(try await store.officialDays())
         await assertClosed(try await store.save(quota: quota))
         await assertClosed(try await store.latestQuota())
+        await assertClosed(try await store.save(refreshState: refreshState))
+        await assertClosed(try await store.refreshState())
         await assertClosed(try await store.replace(cycles: [cycle]))
         await assertClosed(try await store.cycles())
         await assertClosed(
@@ -213,6 +221,12 @@ final class PrivacyBoundaryTests: XCTestCase {
             resetsAt: eventDate,
             fetchedAt: eventDate
         )
+        let invalidRefreshState = UsageRefreshState(
+            lastSuccessfulQuotaRefreshAt: Date(timeIntervalSince1970: .nan),
+            lastSuccessfulOfficialUsageRefreshAt: nil,
+            consecutiveFailureCount: -1,
+            failedSources: [.officialUsage]
+        )
 
         await assertClosed(try await store.insert(events: [invalidEvent]))
         await assertClosed(
@@ -223,6 +237,7 @@ final class PrivacyBoundaryTests: XCTestCase {
             try await store.upsert(officialDays: [invalidOfficialDay])
         )
         await assertClosed(try await store.save(quota: invalidQuota))
+        await assertClosed(try await store.save(refreshState: invalidRefreshState))
         await assertClosed(try await store.replace(cycles: Array(repeating: cycle, count: 10)))
         await assertClosed(
             try await store.pruneUsage(

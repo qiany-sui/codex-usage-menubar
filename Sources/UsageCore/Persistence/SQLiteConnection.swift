@@ -210,6 +210,14 @@ final class SQLiteStatement {
         sqlite3_column_double(try pointer(), column)
     }
 
+    func optionalDouble(at column: Int32) throws -> Double? {
+        let statement = try pointer()
+        guard sqlite3_column_type(statement, column) != SQLITE_NULL else {
+            return nil
+        }
+        return sqlite3_column_double(statement, column)
+    }
+
     func string(at column: Int32) throws -> String {
         let statement = try pointer()
         guard sqlite3_column_type(statement, column) != SQLITE_NULL else {

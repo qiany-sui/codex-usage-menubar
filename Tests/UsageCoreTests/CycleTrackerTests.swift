@@ -2,6 +2,63 @@ import XCTest
 @testable import UsageCore
 
 final class CycleTrackerTests: XCTestCase {
+    func testPrependsEightEstimatedCyclesWithoutEstimatingObservedCurrentBoundary() {
+        let start = Date(timeIntervalSince1970: 10_000_000)
+        let duration = TimeInterval(10_080 * 60)
+
+        let cycles = CycleTracker().update(
+            existing: [],
+            quota: quota(
+                startsAt: start,
+                endsAt: start.addingTimeInterval(duration)
+            ),
+            events: []
+        )
+
+        XCTAssertEqual(cycles.count, 9)
+        XCTAssertEqual(cycles.first?.startsAt, start.addingTimeInterval(-8 * duration))
+        XCTAssertTrue(cycles.dropLast().allSatisfy(\.boundaryIsEstimated))
+        XCTAssertFalse(cycles.last?.boundaryIsEstimated ?? true)
+        XCTAssertEqual(
+            zip(cycles, cycles.dropFirst()).map { $0.endsAt == $1.startsAt },
+            Array(repeating: true, count: 8)
+        )
+    }
+
+    func testEstimatedDuplicateDoesNotOverwriteRealObservedBoundary() {
+        let firstStart = Date(timeIntervalSince1970: 1_000)
+        let duration = TimeInterval(10_080 * 60)
+        let currentStart = firstStart.addingTimeInterval(duration)
+        let existing = [
+            cycle(
+                startsAt: firstStart,
+                endsAt: currentStart,
+                boundaryIsEstimated: false
+            ),
+            cycle(
+                startsAt: firstStart.addingTimeInterval(0.5),
+                endsAt: currentStart,
+                boundaryIsEstimated: true
+            ),
+            cycle(
+                startsAt: currentStart,
+                endsAt: currentStart.addingTimeInterval(duration),
+                boundaryIsEstimated: false
+            )
+        ]
+
+        let cycles = CycleTracker().update(
+            existing: existing,
+            quota: quota(
+                startsAt: currentStart,
+                endsAt: currentStart.addingTimeInterval(duration)
+            ),
+            events: []
+        )
+
+        XCTAssertFalse(cycles.first { $0.startsAt == firstStart }?.boundaryIsEstimated ?? true)
+    }
+
     func testNewDerivedStartClosesPreviousCycleAndStartsAnother() {
         let oldStart = Date(timeIntervalSince1970: 1_000_000)
         let oldEnd = oldStart.addingTimeInterval(10_080 * 60)
@@ -23,12 +80,13 @@ final class CycleTrackerTests: XCTestCase {
             events: [event]
         )
 
-        XCTAssertEqual(cycles.count, 2)
-        XCTAssertEqual(cycles[0].endsAt, newStart)
-        XCTAssertEqual(cycles[1].startsAt, newStart)
-        XCTAssertEqual(cycles[1].usage, event.usage)
-        XCTAssertEqual(cycles[1].displayedTokens, 120)
-        XCTAssertEqual(cycles[1].status, .localLive)
+        let observed = Array(cycles.suffix(2))
+        XCTAssertEqual(cycles.count, 9)
+        XCTAssertEqual(observed[0].endsAt, newStart)
+        XCTAssertEqual(observed[1].startsAt, newStart)
+        XCTAssertEqual(observed[1].usage, event.usage)
+        XCTAssertEqual(observed[1].displayedTokens, 120)
+        XCTAssertEqual(observed[1].status, .localLive)
     }
 
     func testStartWithinOneSecondUpdatesSameCycleEndAndUsage() {
@@ -52,10 +110,10 @@ final class CycleTrackerTests: XCTestCase {
             events: [event]
         )
 
-        XCTAssertEqual(cycles.count, 1)
-        XCTAssertEqual(cycles[0].startsAt, start)
-        XCTAssertEqual(cycles[0].endsAt, start.addingTimeInterval(200))
-        XCTAssertEqual(cycles[0].usage, event.usage)
+        XCTAssertEqual(cycles.count, 9)
+        XCTAssertEqual(cycles.last?.startsAt, start)
+        XCTAssertEqual(cycles.last?.endsAt, start.addingTimeInterval(200))
+        XCTAssertEqual(cycles.last?.usage, event.usage)
     }
 
     func testOlderDerivedStartDoesNotMoveCurrentCycleBackward() {
@@ -79,10 +137,10 @@ final class CycleTrackerTests: XCTestCase {
             events: [event]
         )
 
-        XCTAssertEqual(cycles.count, 1)
-        XCTAssertEqual(cycles[0].startsAt, start)
-        XCTAssertEqual(cycles[0].endsAt, current.endsAt)
-        XCTAssertEqual(cycles[0].usage, event.usage)
+        XCTAssertEqual(cycles.count, 9)
+        XCTAssertEqual(cycles.last?.startsAt, start)
+        XCTAssertEqual(cycles.last?.endsAt, current.endsAt)
+        XCTAssertEqual(cycles.last?.usage, event.usage)
     }
 
     func testCycleAggregationUsesHalfOpenInterval() {
@@ -105,8 +163,8 @@ final class CycleTrackerTests: XCTestCase {
             events: [inside, atEnd]
         )
 
-        XCTAssertEqual(cycles.single?.usage, inside.usage)
-        XCTAssertEqual(cycles.single?.displayedTokens, 12)
+        XCTAssertEqual(cycles.last?.usage, inside.usage)
+        XCTAssertEqual(cycles.last?.displayedTokens, 12)
     }
 
     func testKeepsCurrentAndEightCompletedCycles() {
@@ -159,8 +217,8 @@ final class CycleTrackerTests: XCTestCase {
             events: events
         )
 
-        XCTAssertEqual(cycles.single?.usage.inputTokens, .max)
-        XCTAssertEqual(cycles.single?.displayedTokens, .max)
+        XCTAssertEqual(cycles.last?.usage.inputTokens, .max)
+        XCTAssertEqual(cycles.last?.displayedTokens, .max)
     }
 
     func testNormalizesUnsortedDuplicateAndOverlappingCycles() {
@@ -196,20 +254,21 @@ final class CycleTrackerTests: XCTestCase {
             events: []
         )
 
-        XCTAssertEqual(cycles.count, 3)
-        XCTAssertEqual(cycles.map(\.startsAt), [
+        let observed = Array(cycles.suffix(3))
+        XCTAssertEqual(cycles.count, 9)
+        XCTAssertEqual(observed.map(\.startsAt), [
             firstStart,
             secondStart,
             thirdStart
         ])
         XCTAssertEqual(
-            cycles[0].endsAt,
+            observed[0].endsAt,
             secondStart,
             "overlap must be truncated to the next start"
         )
-        XCTAssertTrue(cycles[0].boundaryIsEstimated)
+        XCTAssertFalse(observed[0].boundaryIsEstimated)
         XCTAssertEqual(
-            cycles[1].endsAt,
+            observed[1].endsAt,
             Date(timeIntervalSince1970: 3_000),
             "an existing gap must not be expanded"
         )
@@ -271,9 +330,10 @@ final class CycleTrackerTests: XCTestCase {
             events: []
         )
 
-        XCTAssertEqual(cycles.count, 2)
-        XCTAssertEqual(cycles[0].endsAt, existingEnd)
-        XCTAssertEqual(cycles[1].startsAt, quotaStart)
+        let observed = Array(cycles.suffix(2))
+        XCTAssertEqual(cycles.count, 9)
+        XCTAssertEqual(observed[0].endsAt, existingEnd)
+        XCTAssertEqual(observed[1].startsAt, quotaStart)
     }
 
     private func cycle(
@@ -301,8 +361,4 @@ final class CycleTrackerTests: XCTestCase {
             fetchedAt: startsAt.addingTimeInterval(30)
         )
     }
-}
-
-private extension Array {
-    var single: Element? { count == 1 ? first : nil }
 }

@@ -35,11 +35,10 @@ public actor UsageService {
     private var didInitialize = false
     private var initializedHome: String?
     private var lastFullRateLimits: RateLimitsResponse?
-    private var lastQuotaRefresh: Date?
-    private var lastOfficialRefresh: Date?
-    private var consecutiveFailures = 0
     private var operationIsLocked = false
     private var operationWaiters: [CheckedContinuation<Void, Never>] = []
+    private var notificationConsumerIsLocked = false
+    private var notificationConsumerWaiters: [CheckedContinuation<Void, Never>] = []
 
     public init(
         accountClient: any AccountUsageReading,
@@ -74,24 +73,34 @@ public actor UsageService {
         now: Date
     ) async throws -> UsageSnapshot {
         try await migrateIfNeeded()
+        var refreshState = try await store.refreshState()
+        let previousFailureCount = refreshState.consecutiveFailureCount
+        var operationHadFailure = false
 
-        var degraded = false
         if !didInitialize {
             do {
                 let result = try await accountClient.initialize()
                 initializedHome = result.codexHome
                 didInitialize = true
+                refreshState = recordingSuccess(
+                    .accountInitialization,
+                    in: refreshState
+                )
             } catch {
-                degraded = true
+                operationHadFailure = true
+                refreshState = recordingFailure(
+                    .accountInitialization,
+                    in: refreshState
+                )
             }
         }
 
         let decision = policy.decision(
             now: now,
             reason: reason,
-            lastQuotaRefresh: lastQuotaRefresh,
-            lastOfficialRefresh: lastOfficialRefresh,
-            consecutiveFailures: consecutiveFailures
+            lastQuotaRefresh: refreshState.lastSuccessfulQuotaRefreshAt,
+            lastOfficialRefresh: refreshState.lastSuccessfulOfficialUsageRefreshAt,
+            consecutiveFailures: refreshState.consecutiveFailureCount
         )
 
         if decision.refreshQuota, didInitialize {
@@ -100,7 +109,8 @@ public actor UsageService {
                 response = try await accountClient.readRateLimits()
             } catch {
                 response = nil
-                degraded = true
+                operationHadFailure = true
+                refreshState = recordingFailure(.rateLimits, in: refreshState)
             }
             if let response {
                 lastFullRateLimits = response
@@ -109,13 +119,16 @@ public actor UsageService {
                     fetchedAt: now
                 ) {
                     try await store.save(quota: quota)
-                    lastQuotaRefresh = now
+                    refreshState = recordingSuccess(
+                        .rateLimits,
+                        in: refreshState,
+                        at: now
+                    )
                 } else {
-                    degraded = true
+                    operationHadFailure = true
+                    refreshState = recordingFailure(.rateLimits, in: refreshState)
                 }
             }
-        } else if decision.refreshQuota {
-            degraded = true
         }
 
         if decision.refreshOfficialUsage, didInitialize {
@@ -124,7 +137,8 @@ public actor UsageService {
                 response = try await accountClient.readAccountUsage()
             } catch {
                 response = nil
-                degraded = true
+                operationHadFailure = true
+                refreshState = recordingFailure(.officialUsage, in: refreshState)
             }
             if let response {
                 if let buckets = response.dailyUsageBuckets {
@@ -133,16 +147,23 @@ public actor UsageService {
                         try await store.upsert(officialDays: conversion.days)
                     }
                     if conversion.hadInvalidBucket {
-                        degraded = true
+                        operationHadFailure = true
+                        refreshState = recordingFailure(
+                            .officialUsage,
+                            in: refreshState
+                        )
                     } else {
-                        lastOfficialRefresh = now
+                        refreshState = recordingSuccess(
+                            .officialUsage,
+                            in: refreshState,
+                            at: now
+                        )
                     }
                 } else {
-                    degraded = true
+                    operationHadFailure = true
+                    refreshState = recordingFailure(.officialUsage, in: refreshState)
                 }
             }
-        } else if decision.refreshOfficialUsage {
-            degraded = true
         }
 
         if decision.indexSessions {
@@ -154,53 +175,113 @@ public actor UsageService {
                 do {
                     _ = try await indexer.index(
                         codexHome: codexHome,
-                        modifiedSince: historyStart(now: now),
+                        modifiedSince: try await indexHistoryStart(now: now),
                         calendar: calendar
+                    )
+                    refreshState = recordingSuccess(
+                        .sessionIndexing,
+                        in: refreshState
                     )
                 } catch let error as SQLiteStoreError {
                     throw error
                 } catch {
-                    degraded = true
+                    operationHadFailure = true
+                    refreshState = recordingFailure(
+                        .sessionIndexing,
+                        in: refreshState
+                    )
                 }
             } else {
-                degraded = true
+                operationHadFailure = true
+                refreshState = recordingFailure(.sessionIndexing, in: refreshState)
             }
         }
 
-        if degraded {
-            consecutiveFailures = incremented(consecutiveFailures)
-        } else {
-            consecutiveFailures = 0
-        }
-
-        var snapshot = try await buildSnapshot(now: now, updateCycles: true)
-        if degraded {
-            snapshot = snapshot.markedStale()
-        }
-        return snapshot
+        refreshState = finalizingFailureCount(
+            in: refreshState,
+            previousCount: previousFailureCount,
+            operationHadFailure: operationHadFailure
+        )
+        try await store.save(refreshState: refreshState)
+        return try await buildSnapshot(now: now, updateCycles: true)
     }
 
     public func processNextAccountNotification(
         now: Date
     ) async throws -> UsageSnapshot? {
-        await acquireOperation()
-        defer { releaseOperation() }
+        await acquireNotificationConsumer()
+        defer { releaseNotificationConsumer() }
         try Task.checkCancellation()
-        return try await processNextAccountNotificationLocked(now: now)
-    }
 
-    private func processNextAccountNotificationLocked(
-        now: Date
-    ) async throws -> UsageSnapshot? {
-        try await migrateIfNeeded()
+        await acquireOperation()
+        do {
+            try await migrateIfNeeded()
+            var refreshState = try await store.refreshState()
+            let previousFailureCount = refreshState.consecutiveFailureCount
+            if !didInitialize {
+                do {
+                    let result = try await accountClient.initialize()
+                    initializedHome = result.codexHome
+                    didInitialize = true
+                    refreshState = recordingSuccess(
+                        .accountInitialization,
+                        in: refreshState
+                    )
+                } catch {
+                    refreshState = recordingFailure(
+                        .accountInitialization,
+                        in: refreshState
+                    )
+                    refreshState = finalizingFailureCount(
+                        in: refreshState,
+                        previousCount: refreshState.consecutiveFailureCount,
+                        operationHadFailure: true
+                    )
+                    try await store.save(refreshState: refreshState)
+                    let snapshot = try await buildSnapshot(
+                        now: now,
+                        updateCycles: false
+                    )
+                    releaseOperation()
+                    return snapshot
+                }
+            }
+            refreshState = finalizingFailureCount(
+                in: refreshState,
+                previousCount: previousFailureCount,
+                operationHadFailure: false
+            )
+            try await store.save(refreshState: refreshState)
+            releaseOperation()
+        } catch {
+            releaseOperation()
+            throw error
+        }
+
         guard let notification = await accountClient.nextNotification() else {
             return nil
         }
+
+        await acquireOperation()
+        defer { releaseOperation() }
+        try Task.checkCancellation()
+        return try await processAccountNotificationLocked(
+            notification,
+            now: now
+        )
+    }
+
+    private func processAccountNotificationLocked(
+        _ notification: AppServerNotification,
+        now: Date
+    ) async throws -> UsageSnapshot? {
         guard case let .rateLimitsUpdated(update) = notification else {
             return nil
         }
 
-        var degraded = false
+        var refreshState = try await store.refreshState()
+        let previousFailureCount = refreshState.consecutiveFailureCount
+        var operationHadFailure = false
         var response = lastFullRateLimits?.applying(update)
         var quota = response.flatMap {
             quotaSelector.select(from: $0, fetchedAt: now)
@@ -210,9 +291,7 @@ public actor UsageService {
                 let full = try await accountClient.readRateLimits()
                 response = full
                 quota = quotaSelector.select(from: full, fetchedAt: now)
-            } catch {
-                degraded = true
-            }
+            } catch {}
         }
 
         if let response {
@@ -220,21 +299,23 @@ public actor UsageService {
         }
         if let quota {
             try await store.save(quota: quota)
-            lastQuotaRefresh = now
+            refreshState = recordingSuccess(
+                .rateLimits,
+                in: refreshState,
+                at: now
+            )
         } else {
-            degraded = true
+            operationHadFailure = true
+            refreshState = recordingFailure(.rateLimits, in: refreshState)
         }
 
-        if degraded {
-            consecutiveFailures = incremented(consecutiveFailures)
-        } else {
-            consecutiveFailures = 0
-        }
-        var snapshot = try await buildSnapshot(now: now, updateCycles: false)
-        if degraded {
-            snapshot = snapshot.markedStale()
-        }
-        return snapshot
+        refreshState = finalizingFailureCount(
+            in: refreshState,
+            previousCount: previousFailureCount,
+            operationHadFailure: operationHadFailure
+        )
+        try await store.save(refreshState: refreshState)
+        return try await buildSnapshot(now: now, updateCycles: false)
     }
 
     public func currentSnapshot(now: Date) async throws -> UsageSnapshot {
@@ -270,6 +351,24 @@ public actor UsageService {
         operationWaiters.count
     }
 
+    private func acquireNotificationConsumer() async {
+        if !notificationConsumerIsLocked {
+            notificationConsumerIsLocked = true
+            return
+        }
+        await withCheckedContinuation { continuation in
+            notificationConsumerWaiters.append(continuation)
+        }
+    }
+
+    private func releaseNotificationConsumer() {
+        guard !notificationConsumerWaiters.isEmpty else {
+            notificationConsumerIsLocked = false
+            return
+        }
+        notificationConsumerWaiters.removeFirst().resume()
+    }
+
     private func migrateIfNeeded() async throws {
         guard !didMigrate else { return }
         try await store.migrate()
@@ -281,10 +380,14 @@ public actor UsageService {
         updateCycles: Bool
     ) async throws -> UsageSnapshot {
         var cycles = try await store.cycles()
-        let eventStart = min(
-            historyStart(now: now),
-            cycles.first?.startsAt ?? historyStart(now: now)
-        )
+        let quota = try await store.latestQuota()
+        var eventStart = historyStart(now: now)
+        if let earliestCycle = cycles.first?.startsAt {
+            eventStart = min(eventStart, earliestCycle)
+        }
+        if let quotaStart = oldestEstimatedBoundary(for: quota) {
+            eventStart = min(eventStart, quotaStart)
+        }
         let events = try await store.events(
             from: eventStart,
             to: Date(
@@ -292,7 +395,6 @@ public actor UsageService {
             )
         )
         let officialDays = try await store.officialDays()
-        let quota = try await store.latestQuota()
 
         if updateCycles, let quota {
             cycles = cycleTracker.update(
@@ -309,7 +411,7 @@ public actor UsageService {
             }
         }
 
-        return reconciler.snapshot(
+        let snapshot = reconciler.snapshot(
             now: now,
             calendar: calendar,
             quota: quota,
@@ -323,11 +425,40 @@ public actor UsageService {
                 officialDays: officialDays
             )
         )
+        let refreshState = try await store.refreshState()
+        return refreshState.failedSources.isEmpty
+            ? snapshot
+            : snapshot.markedStale()
     }
 
     private func historyStart(now: Date) -> Date {
         calendar.date(byAdding: .day, value: -56, to: now)
             ?? now.addingTimeInterval(-56 * 24 * 60 * 60)
+    }
+
+    private func indexHistoryStart(now: Date) async throws -> Date {
+        var start = historyStart(now: now)
+        if let quotaStart = oldestEstimatedBoundary(
+            for: try await store.latestQuota()
+        ) {
+            start = min(start, quotaStart)
+        }
+        if let storedStart = try await store.cycles().first?.startsAt {
+            start = min(start, storedStart)
+        }
+        return start
+    }
+
+    private func oldestEstimatedBoundary(
+        for quota: QuotaSnapshot?
+    ) -> Date? {
+        guard let quota,
+              (9_000...11_000).contains(quota.windowDurationMinutes) else {
+            return nil
+        }
+        let duration = TimeInterval(quota.windowDurationMinutes) * 60
+        let boundary = quota.startsAt.addingTimeInterval(-8 * duration)
+        return boundary.timeIntervalSince1970.isFinite ? boundary : nil
     }
 
     private func officialDays(
@@ -415,6 +546,58 @@ public actor UsageService {
     private func incremented(_ value: Int) -> Int {
         let (next, overflow) = value.addingReportingOverflow(1)
         return overflow ? .max : next
+    }
+
+    private func recordingFailure(
+        _ source: UsageRefreshFailureSource,
+        in state: UsageRefreshState
+    ) -> UsageRefreshState {
+        var failedSources = state.failedSources
+        failedSources.insert(source)
+        return UsageRefreshState(
+            lastSuccessfulQuotaRefreshAt: state.lastSuccessfulQuotaRefreshAt,
+            lastSuccessfulOfficialUsageRefreshAt:
+                state.lastSuccessfulOfficialUsageRefreshAt,
+            consecutiveFailureCount: state.consecutiveFailureCount,
+            failedSources: failedSources
+        )
+    }
+
+    private func recordingSuccess(
+        _ source: UsageRefreshFailureSource,
+        in state: UsageRefreshState,
+        at date: Date? = nil
+    ) -> UsageRefreshState {
+        var failedSources = state.failedSources
+        failedSources.remove(source)
+        let quotaRefresh = source == .rateLimits
+            ? date ?? state.lastSuccessfulQuotaRefreshAt
+            : state.lastSuccessfulQuotaRefreshAt
+        let officialRefresh = source == .officialUsage
+            ? date ?? state.lastSuccessfulOfficialUsageRefreshAt
+            : state.lastSuccessfulOfficialUsageRefreshAt
+        return UsageRefreshState(
+            lastSuccessfulQuotaRefreshAt: quotaRefresh,
+            lastSuccessfulOfficialUsageRefreshAt: officialRefresh,
+            consecutiveFailureCount: state.consecutiveFailureCount,
+            failedSources: failedSources
+        )
+    }
+
+    private func finalizingFailureCount(
+        in state: UsageRefreshState,
+        previousCount: Int,
+        operationHadFailure: Bool
+    ) -> UsageRefreshState {
+        UsageRefreshState(
+            lastSuccessfulQuotaRefreshAt: state.lastSuccessfulQuotaRefreshAt,
+            lastSuccessfulOfficialUsageRefreshAt:
+                state.lastSuccessfulOfficialUsageRefreshAt,
+            consecutiveFailureCount: operationHadFailure
+                ? incremented(previousCount)
+                : state.failedSources.isEmpty ? 0 : previousCount,
+            failedSources: state.failedSources
+        )
     }
 }
 
