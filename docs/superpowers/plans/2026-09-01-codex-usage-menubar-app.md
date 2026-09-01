@@ -229,7 +229,7 @@ PBXProject
 │   ├── CodexUsage group -> App/CodexUsage 下的 Swift、Info.plist、Assets.xcassets
 │   ├── CodexUsageTests group -> App/CodexUsageTests 下的 Swift
 │   ├── Products group -> Codex Usage.app、CodexUsageTests.xctest
-│   └── XCLocalSwiftPackageReference "../.."
+│   └── XCLocalSwiftPackageReference ".."
 ├── PBXNativeTarget CodexUsage
 │   ├── Sources: CodexUsageApp.swift
 │   ├── Resources: Assets.xcassets
@@ -261,7 +261,7 @@ SWIFT_STRICT_CONCURRENCY = complete
 SWIFT_VERSION = 6.0
 ```
 
-测试 Target 使用 `com.local.CodexUsageTests`、`TEST_HOST = $(BUILT_PRODUCTS_DIR)/Codex Usage.app/Contents/MacOS/Codex Usage`、`BUNDLE_LOADER = $(TEST_HOST)`，并同样固定 `arm64`、macOS 13 和 Swift 6。项目的 local package reference 必须是相对 `App/CodexUsage.xcodeproj` 的 `../..`，两个 Target 都链接 `UsageCore` product。
+测试 Target 使用 `com.local.CodexUsageTests`、`TEST_HOST = $(BUILT_PRODUCTS_DIR)/Codex Usage.app/Contents/MacOS/Codex Usage`、`BUNDLE_LOADER = $(TEST_HOST)`，并同样固定 `arm64`、macOS 13 和 Swift 6。Xcode 以 `.xcodeproj` 所在的 `App/` 目录解析 local package reference，因此路径必须是 `..`，两个 Target 都链接 `UsageCore` product。
 
 - [ ] **Step 2: 写最小但真实可运行的菜单栏入口**
 
