@@ -1,7 +1,9 @@
 import AppKit
 import SwiftUI
+import UsageCore
 
 struct UsagePopoverView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var viewModel: UsageViewModel
 
     private let now: () -> Date
@@ -41,31 +43,70 @@ struct UsagePopoverView: View {
                 Task { await viewModel.chooseCodexHome() }
             }
         } else if let snapshot = viewModel.snapshot {
-            OverviewView(
-                presentation: OverviewPresentation(
-                    snapshot: snapshot,
-                    now: now(),
-                    timeZone: timeZone
-                ),
-                isRefreshing: viewModel.isRefreshing,
-                showsCodexHomeAction: viewModel.needsCodexHomeSelection,
-                onRefresh: {
-                    Task { await viewModel.refreshManually() }
-                },
-                onShowTrend: viewModel.showTrend,
-                onShowHistory: viewModel.showHistory,
-                onChooseCodexHome: {
-                    Task { await viewModel.chooseCodexHome() }
-                },
-                onExit: {
-                    NSApplication.shared.terminate(nil)
-                }
-            )
+            routedContent(snapshot: snapshot)
         } else {
             EmptyUsageState {
                 Task { await viewModel.refreshManually() }
             }
         }
+    }
+
+    private func routedContent(snapshot: UsageSnapshot) -> some View {
+        Group {
+            switch viewModel.page {
+            case .overview:
+                OverviewView(
+                    presentation: OverviewPresentation(
+                        snapshot: snapshot,
+                        now: now(),
+                        timeZone: timeZone
+                    ),
+                    isRefreshing: viewModel.isRefreshing,
+                    showsCodexHomeAction: viewModel.needsCodexHomeSelection,
+                    onRefresh: {
+                        Task { await viewModel.refreshManually() }
+                    },
+                    onShowTrend: viewModel.showTrend,
+                    onShowHistory: viewModel.showHistory,
+                    onChooseCodexHome: {
+                        Task { await viewModel.chooseCodexHome() }
+                    },
+                    onExit: {
+                        NSApplication.shared.terminate(nil)
+                    }
+                )
+            case .trend:
+                TrendDetailView(
+                    presentation: TrendPresentation(snapshot: snapshot),
+                    onBack: viewModel.showOverview
+                )
+            case .history:
+                CycleHistoryView(
+                    presentation: CycleHistoryPresentation(
+                        snapshot: snapshot,
+                        timeZone: timeZone
+                    ),
+                    onBack: viewModel.showOverview
+                )
+            }
+        }
+        .id(viewModel.page)
+        .transition(pageTransition)
+        .animation(
+            reduceMotion
+                ? nil
+                : .easeInOut(duration: UsageTheme.transitionDuration),
+            value: viewModel.page
+        )
+    }
+
+    private var pageTransition: AnyTransition {
+        reduceMotion
+            ? .identity
+            : .asymmetric(
+                insertion: .move(edge: .trailing).combined(with: .opacity),
+                removal: .move(edge: .leading).combined(with: .opacity)
+            )
     }
 }
 

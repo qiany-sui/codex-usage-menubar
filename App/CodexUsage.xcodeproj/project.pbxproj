@@ -27,6 +27,8 @@
 		B00000000000000000000011 /* UsagePresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000021 /* UsagePresentation.swift */; };
 		B00000000000000000000012 /* UsagePopoverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000022 /* UsagePopoverView.swift */; };
 		B00000000000000000000013 /* OverviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000023 /* OverviewView.swift */; };
+		B00000000000000000000014 /* TrendDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000024 /* TrendDetailView.swift */; };
+		B00000000000000000000015 /* CycleHistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000025 /* CycleHistoryView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -61,6 +63,8 @@
 		B00000000000000000000021 /* UsagePresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsagePresentation.swift; sourceTree = "<group>"; };
 		B00000000000000000000022 /* UsagePopoverView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsagePopoverView.swift; sourceTree = "<group>"; };
 		B00000000000000000000023 /* OverviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverviewView.swift; sourceTree = "<group>"; };
+		B00000000000000000000024 /* TrendDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrendDetailView.swift; sourceTree = "<group>"; };
+		B00000000000000000000025 /* CycleHistoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CycleHistoryView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -103,6 +107,8 @@
 				B00000000000000000000021 /* UsagePresentation.swift */,
 				B00000000000000000000022 /* UsagePopoverView.swift */,
 				B00000000000000000000023 /* OverviewView.swift */,
+				B00000000000000000000024 /* TrendDetailView.swift */,
+				B00000000000000000000025 /* CycleHistoryView.swift */,
 				A00000000000000000000035 /* UsageFormatters.swift */,
 				A00000000000000000000036 /* UsageTheme.swift */,
 				A00000000000000000000032 /* Assets.xcassets */,
@@ -251,6 +257,8 @@
 				B00000000000000000000011 /* UsagePresentation.swift in Sources */,
 				B00000000000000000000012 /* UsagePopoverView.swift in Sources */,
 				B00000000000000000000013 /* OverviewView.swift in Sources */,
+				B00000000000000000000014 /* TrendDetailView.swift in Sources */,
+				B00000000000000000000015 /* CycleHistoryView.swift in Sources */,
 				A00000000000000000000046 /* UsageFormatters.swift in Sources */,
 				A00000000000000000000047 /* UsageTheme.swift in Sources */,
 			);

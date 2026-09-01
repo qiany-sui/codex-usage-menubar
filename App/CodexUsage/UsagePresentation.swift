@@ -90,6 +90,94 @@ struct OverviewPresentation: Equatable {
     }
 }
 
+struct TrendDayPresentation: Equatable, Identifiable {
+    var id: LocalDay { day }
+
+    let day: LocalDay
+    let label: String
+    let tokens: Int64
+    let formattedTokens: String
+    let status: UsageCalibrationStatus
+    let statusLabel: String
+}
+
+struct TrendPresentation: Equatable {
+    let totalTokens: Int64
+    let averageTokens: Int64
+    let days: [TrendDayPresentation]
+
+    init(snapshot: UsageSnapshot) {
+        days = snapshot.recentDays.suffix(7).map { day in
+            TrendDayPresentation(
+                day: day.day,
+                label: UsageFormatters.day(day.day),
+                tokens: day.displayedTokens,
+                formattedTokens: UsageFormatters.tokens(day.displayedTokens),
+                status: day.status,
+                statusLabel: UsageFormatters.calibration(day.status)
+            )
+        }
+        totalTokens = days.reduce(0) { $0 + $1.tokens }
+        averageTokens = days.isEmpty
+            ? 0
+            : totalTokens / Int64(days.count)
+    }
+}
+
+struct CycleEntryPresentation: Equatable, Identifiable {
+    let id: Date
+    let range: String
+    let formattedTokens: String
+    let statusLabel: String
+    let isCurrent: Bool
+    let boundaryIsEstimated: Bool
+}
+
+struct CycleHistoryPresentation: Equatable {
+    let entries: [CycleEntryPresentation]
+
+    init(snapshot: UsageSnapshot, timeZone: TimeZone) {
+        var cycles: [(cycle: QuotaCycle, isCurrent: Bool)] = []
+        var seenStartsAt = Set<Date>()
+
+        if let current = snapshot.currentCycle {
+            cycles.append((current, true))
+            seenStartsAt.insert(current.startsAt)
+        }
+
+        for cycle in snapshot.cycleHistory.sorted(by: {
+            $0.endsAt > $1.endsAt
+        }) {
+            guard cycles.count < (snapshot.currentCycle == nil ? 8 : 9) else {
+                break
+            }
+            guard seenStartsAt.insert(cycle.startsAt).inserted else {
+                continue
+            }
+            cycles.append((cycle, false))
+        }
+
+        entries = cycles.map { item in
+            CycleEntryPresentation(
+                id: item.cycle.startsAt,
+                range: UsageFormatters.cycleRange(
+                    startsAt: item.cycle.startsAt,
+                    endsAt: item.cycle.endsAt,
+                    timeZone: timeZone
+                ),
+                formattedTokens: UsageFormatters.tokens(
+                    item.cycle.displayedTokens
+                ),
+                statusLabel: UsageFormatters.calibration(
+                    item.cycle.status
+                ),
+                isCurrent: item.isCurrent,
+                boundaryIsEstimated: item.cycle.boundaryIsEstimated
+            )
+        }
+    }
+}
+
 #if DEBUG
 enum UsagePreviewData {
     static let now = Date(timeIntervalSince1970: 1_788_249_600)
@@ -155,6 +243,25 @@ enum UsagePreviewData {
             status: status,
             boundaryIsEstimated: false
         )
+        let cycleHistory = (0 ..< 8).map { index in
+            let end = currentCycle.startsAt.addingTimeInterval(
+                -Double(index) * 7 * 24 * 60 * 60
+            )
+            let start = end.addingTimeInterval(-7 * 24 * 60 * 60)
+            let tokens = Int64(28_600_000 - index * 1_350_000)
+            return QuotaCycle(
+                startsAt: start,
+                endsAt: end,
+                usage: TokenBreakdown(
+                    inputTokens: tokens - 2_400_000,
+                    cachedInputTokens: tokens / 2,
+                    outputTokens: 2_400_000
+                ),
+                displayedTokens: tokens,
+                status: index < 5 ? .calibrated : .partiallyCalibrated,
+                boundaryIsEstimated: index >= 6
+            )
+        }
         let quota = includesQuota
             ? QuotaSnapshot(
                 limitID: "weekly",
@@ -177,7 +284,7 @@ enum UsagePreviewData {
             ),
             currentCycle: currentCycle,
             recentDays: recentDays,
-            cycleHistory: [],
+            cycleHistory: cycleHistory,
             lastUpdatedAt: now.addingTimeInterval(-7 * 60),
             status: status
         )

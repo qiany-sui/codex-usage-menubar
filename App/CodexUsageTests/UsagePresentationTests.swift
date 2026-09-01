@@ -106,4 +106,98 @@ final class UsagePresentationTests: XCTestCase {
         XCTAssertEqual(presentation.lastUpdated, "7 分钟前更新")
         XCTAssertNil(presentation.staleMessage)
     }
+
+    func testTrendUsesSevenMostRecentDaysAndComputesAverage() throws {
+        let snapshot = try sampleSnapshot(
+            recentDayTotals: [100, 200, 300, 400, 500, 600, 700, 800]
+        )
+
+        let trend = TrendPresentation(snapshot: snapshot)
+
+        XCTAssertEqual(
+            trend.days.map(\.tokens),
+            [200, 300, 400, 500, 600, 700, 800]
+        )
+        XCTAssertEqual(trend.totalTokens, 3_500)
+        XCTAssertEqual(trend.averageTokens, 500)
+    }
+
+    func testTrendRetainsPerDayCalibrationStatus() throws {
+        let snapshot = try sampleSnapshot(
+            recentStatuses: [
+                .calibrated,
+                .partiallyCalibrated,
+                .localLive
+            ]
+        )
+
+        XCTAssertEqual(
+            TrendPresentation(snapshot: snapshot)
+                .days.suffix(3).map(\.status),
+            [.calibrated, .partiallyCalibrated, .localLive]
+        )
+    }
+
+    func testTrendDoesNotPadMissingDaysAndHandlesEmptyAverage() throws {
+        let short = TrendPresentation(
+            snapshot: try sampleSnapshot(recentDayTotals: [100, 300, 500])
+        )
+        let empty = TrendPresentation(
+            snapshot: try sampleSnapshot(recentDayTotals: [])
+        )
+
+        XCTAssertEqual(short.days.map(\.tokens), [100, 300, 500])
+        XCTAssertEqual(short.averageTokens, 300)
+        XCTAssertTrue(empty.days.isEmpty)
+        XCTAssertEqual(empty.totalTokens, 0)
+        XCTAssertEqual(empty.averageTokens, 0)
+    }
+
+    func testCycleHistoryContainsCurrentThenEightCompletedCycles() throws {
+        let snapshot = try sampleSnapshot(completedCycleCount: 10)
+
+        let history = CycleHistoryPresentation(
+            snapshot: snapshot,
+            timeZone: timeZone
+        )
+
+        XCTAssertEqual(history.entries.count, 9)
+        XCTAssertTrue(history.entries[0].isCurrent)
+        XCTAssertTrue(
+            history.entries.dropFirst().allSatisfy { !$0.isCurrent }
+        )
+    }
+
+    func testCycleHistorySortsNewestFirstAndRemovesCurrentDuplicate() throws {
+        let base = try sampleSnapshot(completedCycleCount: 4)
+        let current = try XCTUnwrap(base.currentCycle)
+        let snapshot = UsageSnapshot(
+            quota: base.quota,
+            today: base.today,
+            currentCycle: current,
+            recentDays: base.recentDays,
+            cycleHistory: [
+                base.cycleHistory[2],
+                current,
+                base.cycleHistory[3],
+                base.cycleHistory[0],
+                base.cycleHistory[1],
+                base.cycleHistory[0]
+            ],
+            lastUpdatedAt: base.lastUpdatedAt,
+            status: base.status
+        )
+
+        let entries = CycleHistoryPresentation(
+            snapshot: snapshot,
+            timeZone: timeZone
+        ).entries
+
+        XCTAssertEqual(entries.count, 5)
+        XCTAssertEqual(entries[0].id, current.startsAt)
+        XCTAssertEqual(
+            Array(entries.dropFirst().map(\.id)),
+            base.cycleHistory.map(\.startsAt)
+        )
+    }
 }
