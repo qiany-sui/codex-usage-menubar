@@ -12,7 +12,7 @@ final class PrivacyBoundaryTests: XCTestCase {
             .appendingPathComponent("sessions")
             .appendingPathComponent("privacy.jsonl")
         let content = [
-            #"{"timestamp":"2026-08-31T01:00:00Z","type":"event_msg","payload":{"type":"user_message","message":"PRIVATE_PROMPT_7E9D4A"}}"#,
+            #"{"timestamp":"2026-08-31T01:00:00Z","type":"event_msg","payload":{"type":"user_message","message":"\#(secret)"}}"#,
             tokenLine(
                 timestamp: "2026-08-31T01:01:00.000Z",
                 input: 100,
@@ -26,7 +26,7 @@ final class PrivacyBoundaryTests: XCTestCase {
         let store = try SQLiteUsageStore(databaseURL: databaseURL)
         try await store.migrate()
         let indexer = SessionUsageIndexer(store: store)
-        _ = try await indexer.index(
+        let result = try await indexer.index(
             codexHome: root,
             modifiedSince: .distantPast,
             calendar: Calendar(identifier: .gregorian)
@@ -44,7 +44,27 @@ final class PrivacyBoundaryTests: XCTestCase {
             cycles: [],
             lastUpdatedAt: try date("2026-08-31T12:00:00.000Z")
         )
-        try await store.close()
+
+        XCTAssertEqual(result.scannedFileCount, 1)
+        XCTAssertEqual(result.insertedEventCount, 1)
+        XCTAssertEqual(events.count, 1)
+        XCTAssertEqual(
+            events.first?.usage,
+            TokenBreakdown(
+                inputTokens: 100,
+                cachedInputTokens: 40,
+                outputTokens: 20
+            )
+        )
+        XCTAssertEqual(
+            snapshot.today.localUsage,
+            TokenBreakdown(
+                inputTokens: 100,
+                cachedInputTokens: 40,
+                outputTokens: 20
+            )
+        )
+        XCTAssertEqual(snapshot.today.displayedTokens, 120)
 
         XCTAssertNil(try JSONEncoder().encode(events).range(of: secretBytes))
         XCTAssertNil(try JSONEncoder().encode(snapshot).range(of: secretBytes))
@@ -54,6 +74,12 @@ final class PrivacyBoundaryTests: XCTestCase {
                 try Data(contentsOf: artifactURL).range(of: secretBytes)
             )
         }
+
+        try await store.close()
+
+        XCTAssertNil(
+            try Data(contentsOf: databaseURL).range(of: secretBytes)
+        )
     }
 
     func testResolverAndIndexerNeverOpenAuthJSON() async throws {
