@@ -152,6 +152,7 @@ actor ReadOnlyUsageStoreSpy: UsageStore {
     private let storedCycles: [QuotaCycle]
     private var storedRefreshState: UsageRefreshState
     private var migrationCount = 0
+    private var snapshotReadCount = 0
     private var writeCount = 0
 
     init(
@@ -186,7 +187,10 @@ actor ReadOnlyUsageStoreSpy: UsageStore {
     }
 
     func events(from: Date, to: Date) throws -> [StoredUsageEvent] {
-        storedEvents.filter { from <= $0.occurredAt && $0.occurredAt < to }
+        snapshotReadCount += 1
+        return storedEvents.filter {
+            from <= $0.occurredAt && $0.occurredAt < to
+        }
     }
 
     func cursor(for pathHash: Data) throws -> FileCursor? { nil }
@@ -197,11 +201,17 @@ actor ReadOnlyUsageStoreSpy: UsageStore {
         writeCount += 1
     }
 
-    func officialDays() throws -> [OfficialUsageDay] { storedOfficialDays }
+    func officialDays() throws -> [OfficialUsageDay] {
+        snapshotReadCount += 1
+        return storedOfficialDays
+    }
 
     func save(quota: QuotaSnapshot) throws { writeCount += 1 }
 
-    func latestQuota() throws -> QuotaSnapshot? { storedQuota }
+    func latestQuota() throws -> QuotaSnapshot? {
+        snapshotReadCount += 1
+        return storedQuota
+    }
 
     func save(refreshState: UsageRefreshState) throws {
         writeCount += 1
@@ -212,7 +222,10 @@ actor ReadOnlyUsageStoreSpy: UsageStore {
 
     func replace(cycles: [QuotaCycle]) throws { writeCount += 1 }
 
-    func cycles() throws -> [QuotaCycle] { storedCycles }
+    func cycles() throws -> [QuotaCycle] {
+        snapshotReadCount += 1
+        return storedCycles
+    }
 
     func pruneUsage(
         eventsBefore: Date,
@@ -227,6 +240,8 @@ actor ReadOnlyUsageStoreSpy: UsageStore {
             writes: writeCount
         )
     }
+
+    func snapshotReads() -> Int { snapshotReadCount }
 }
 
 actor InitializationGateAccountClient: AccountUsageReading {
@@ -1345,6 +1360,290 @@ final class UsageServiceTests: XCTestCase {
             sideEffects,
             StoreSideEffectCounts(migrations: 0, writes: 0)
         )
+    }
+
+    func testScheduledNoOpReusesSnapshotWithoutHeavyStoreReads() async throws {
+        let codexHome = try temporaryCodexHome()
+        let store = ReadOnlyUsageStoreSpy()
+        let client = FakeAccountUsageClient(
+            initialized: InitializeResult(
+                codexHome: codexHome.path,
+                platformFamily: "unix",
+                platformOs: "macos",
+                userAgent: "test"
+            ),
+            limits: ServiceFixture.fullLimits,
+            usage: ServiceFixture.fullUsage
+        )
+        let indexer = CountingSessionIndexer()
+        let service = makeService(
+            accountClient: client,
+            indexer: indexer,
+            store: store,
+            codexHome: codexHome
+        )
+        let startupSnapshot = try await service.refresh(
+            reason: .startup,
+            now: now
+        )
+        let readsAfterStartup = await store.snapshotReads()
+        let callsAfterStartup = await client.callCounts()
+        let indexCallsAfterStartup = await indexer.calls()
+
+        let scheduledSnapshot = try await service.refresh(
+            reason: .scheduled,
+            now: now.addingTimeInterval(60)
+        )
+        let readsAfterScheduled = await store.snapshotReads()
+        let callsAfterScheduled = await client.callCounts()
+        let indexCallsAfterScheduled = await indexer.calls()
+
+        XCTAssertEqual(scheduledSnapshot, startupSnapshot)
+        XCTAssertEqual(readsAfterScheduled, readsAfterStartup)
+        XCTAssertEqual(
+            callsAfterScheduled.initialize,
+            callsAfterStartup.initialize
+        )
+        XCTAssertEqual(callsAfterScheduled.limits, callsAfterStartup.limits)
+        XCTAssertEqual(callsAfterScheduled.usage, callsAfterStartup.usage)
+        XCTAssertEqual(
+            callsAfterScheduled.notification,
+            callsAfterStartup.notification
+        )
+        XCTAssertEqual(indexCallsAfterScheduled, indexCallsAfterStartup)
+    }
+
+    func testScheduledRefreshRunsSessionIndexFallbackEveryFiveMinutes() async throws {
+        let codexHome = try temporaryCodexHome()
+        let store = ReadOnlyUsageStoreSpy()
+        let indexer = CountingSessionIndexer()
+        let service = makeService(
+            accountClient: FakeAccountUsageClient(
+                initialized: InitializeResult(
+                    codexHome: codexHome.path,
+                    platformFamily: "unix",
+                    platformOs: "macos",
+                    userAgent: "test"
+                ),
+                limits: ServiceFixture.fullLimits,
+                usage: ServiceFixture.fullUsage
+            ),
+            indexer: indexer,
+            store: store,
+            codexHome: codexHome
+        )
+
+        _ = try await service.refresh(reason: .startup, now: now)
+        _ = try await service.refresh(
+            reason: .scheduled,
+            now: now.addingTimeInterval(60)
+        )
+        let indexCallsAfterOneMinute = await indexer.calls()
+        XCTAssertEqual(indexCallsAfterOneMinute, 1)
+
+        _ = try await service.refresh(
+            reason: .scheduled,
+            now: now.addingTimeInterval(300)
+        )
+        let indexCallsAfterFiveMinutes = await indexer.calls()
+        XCTAssertEqual(indexCallsAfterFiveMinutes, 2)
+
+        _ = try await service.refresh(
+            reason: .scheduled,
+            now: now.addingTimeInterval(360)
+        )
+        let indexCallsAfterSixMinutes = await indexer.calls()
+        XCTAssertEqual(indexCallsAfterSixMinutes, 2)
+    }
+
+    func testScheduledRefreshRebuildsCachedSnapshotAfterMidnight() async throws {
+        let beforeMidnight = try date("2026-09-01T23:59:30Z")
+        let codexHome = try temporaryCodexHome()
+        let store = ReadOnlyUsageStoreSpy()
+        let service = makeService(
+            accountClient: FakeAccountUsageClient(
+                initialized: InitializeResult(
+                    codexHome: codexHome.path,
+                    platformFamily: "unix",
+                    platformOs: "macos",
+                    userAgent: "test"
+                ),
+                limits: ServiceFixture.fullLimits,
+                usage: ServiceFixture.fullUsage
+            ),
+            indexer: CountingSessionIndexer(),
+            store: store,
+            codexHome: codexHome
+        )
+        let startup = try await service.refresh(
+            reason: .startup,
+            now: beforeMidnight
+        )
+        let readsAfterStartup = await store.snapshotReads()
+
+        let scheduled = try await service.refresh(
+            reason: .scheduled,
+            now: beforeMidnight.addingTimeInterval(60)
+        )
+        let readsAfterScheduled = await store.snapshotReads()
+
+        XCTAssertEqual(startup.today.day.iso8601, "2026-09-01")
+        XCTAssertEqual(scheduled.today.day.iso8601, "2026-09-02")
+        XCTAssertGreaterThan(readsAfterScheduled, readsAfterStartup)
+    }
+
+    func testScheduledRefreshRebuildsCachedSnapshotAfterCurrentCycleEnds() async throws {
+        let codexHome = try temporaryCodexHome()
+        let cycle = QuotaCycle(
+            startsAt: now.addingTimeInterval(-300),
+            endsAt: now.addingTimeInterval(30),
+            usage: .zero,
+            displayedTokens: 0,
+            status: .localLive,
+            boundaryIsEstimated: false
+        )
+        let store = ReadOnlyUsageStoreSpy(cycles: [cycle])
+        let service = makeService(
+            accountClient: FakeAccountUsageClient(
+                initialized: InitializeResult(
+                    codexHome: codexHome.path,
+                    platformFamily: "unix",
+                    platformOs: "macos",
+                    userAgent: "test"
+                ),
+                limits: ServiceFixture.fullLimits,
+                usage: ServiceFixture.fullUsage
+            ),
+            indexer: CountingSessionIndexer(),
+            store: store,
+            codexHome: codexHome
+        )
+        let startup = try await service.refresh(reason: .startup, now: now)
+        let readsAfterStartup = await store.snapshotReads()
+
+        let scheduled = try await service.refresh(
+            reason: .scheduled,
+            now: now.addingTimeInterval(60)
+        )
+        let readsAfterScheduled = await store.snapshotReads()
+
+        XCTAssertEqual(startup.currentCycle?.endsAt, cycle.endsAt)
+        XCTAssertNil(scheduled.currentCycle)
+        XCTAssertGreaterThan(readsAfterScheduled, readsAfterStartup)
+    }
+
+    func testScheduledRefreshFetchesQuotaImmediatelyAfterReset() async throws {
+        let codexHome = try temporaryCodexHome()
+        let store = try SQLiteUsageStore(databaseURL: try temporaryDatabaseURL())
+        let initialReset = now.addingTimeInterval(30)
+        let refreshedReset = now.addingTimeInterval(7 * 24 * 60 * 60)
+        let client = FakeAccountUsageClient(
+            initialized: InitializeResult(
+                codexHome: codexHome.path,
+                platformFamily: "unix",
+                platformOs: "macos",
+                userAgent: "test"
+            ),
+            limits: RateLimitsResponse(
+                rateLimits: RateLimitBucket(
+                    limitId: "codex",
+                    limitName: nil,
+                    primary: RateLimitWindow(
+                        usedPercent: 25,
+                        windowDurationMins: 10_080,
+                        resetsAt: Int64(initialReset.timeIntervalSince1970)
+                    ),
+                    secondary: nil
+                ),
+                rateLimitsByLimitId: nil
+            ),
+            usage: ServiceFixture.fullUsage
+        )
+        let service = makeService(
+            accountClient: client,
+            indexer: CountingSessionIndexer(),
+            store: store,
+            codexHome: codexHome
+        )
+        let startup = try await service.refresh(reason: .startup, now: now)
+        await client.setLimits(
+            RateLimitsResponse(
+                rateLimits: RateLimitBucket(
+                    limitId: "codex",
+                    limitName: nil,
+                    primary: RateLimitWindow(
+                        usedPercent: 5,
+                        windowDurationMins: 10_080,
+                        resetsAt: Int64(refreshedReset.timeIntervalSince1970)
+                    ),
+                    secondary: nil
+                ),
+                rateLimitsByLimitId: nil
+            )
+        )
+
+        let afterReset = try await service.refresh(
+            reason: .scheduled,
+            now: now.addingTimeInterval(60)
+        )
+        let oneMinuteLater = try await service.refresh(
+            reason: .scheduled,
+            now: now.addingTimeInterval(120)
+        )
+        let calls = await client.callCounts()
+
+        XCTAssertEqual(startup.quota?.resetsAt, initialReset)
+        XCTAssertEqual(afterReset.quota?.resetsAt, refreshedReset)
+        XCTAssertEqual(oneMinuteLater, afterReset)
+        XCTAssertEqual(calls.limits, 2)
+        try await store.close()
+    }
+
+    func testNotificationInitializationRecoveryInvalidatesStaleSnapshot() async throws {
+        let codexHome = try temporaryCodexHome()
+        let refreshState = UsageRefreshState(
+            lastSuccessfulQuotaRefreshAt: now,
+            lastSuccessfulOfficialUsageRefreshAt: now,
+            consecutiveFailureCount: 0,
+            failedSources: []
+        )
+        let store = ReadOnlyUsageStoreSpy(refreshState: refreshState)
+        let client = FakeAccountUsageClient(
+            initialized: InitializeResult(
+                codexHome: codexHome.path,
+                platformFamily: "unix",
+                platformOs: "macos",
+                userAgent: "test"
+            ),
+            limits: ServiceFixture.fullLimits,
+            usage: ServiceFixture.fullUsage
+        )
+        let indexer = CountingSessionIndexer()
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let service = UsageService(
+            accountClient: client,
+            indexer: indexer,
+            store: store,
+            environment: ["CODEX_HOME": codexHome.path],
+            homeDirectory: codexHome.deletingLastPathComponent(),
+            calendar: calendar
+        )
+        await client.setInitializeError(rpcFailure())
+        let failed = try await service.refresh(reason: .startup, now: now)
+        await client.setInitializeError(nil)
+
+        let notification = try await service.processNextAccountNotification(
+            now: now.addingTimeInterval(30)
+        )
+        let recovered = try await service.refresh(
+            reason: .scheduled,
+            now: now.addingTimeInterval(60)
+        )
+
+        XCTAssertNil(notification)
+        XCTAssertEqual(failed.status, .stale)
+        XCTAssertNotEqual(recovered.status, .stale)
     }
 
     func testNineRetainedCyclesPruneOnlyUsageBeforeEarliestCycle() async throws {

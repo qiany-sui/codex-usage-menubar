@@ -35,6 +35,8 @@ public actor UsageService {
     private var didInitialize = false
     private var initializedHome: String?
     private var lastFullRateLimits: RateLimitsResponse?
+    private var lastBuiltSnapshot: UsageSnapshot?
+    private var lastSessionIndexAttemptAt: Date?
     private var operationIsLocked = false
     private var operationWaiters: [CheckedContinuation<Void, Never>] = []
     private var notificationConsumerIsLocked = false
@@ -73,6 +75,7 @@ public actor UsageService {
         now: Date
     ) async throws -> UsageSnapshot {
         try await migrateIfNeeded()
+        let wasInitialized = didInitialize
         var refreshState = try await store.refreshState()
         let previousFailureCount = refreshState.consecutiveFailureCount
         var operationHadFailure = false
@@ -102,8 +105,22 @@ public actor UsageService {
             lastOfficialRefresh: refreshState.lastSuccessfulOfficialUsageRefreshAt,
             consecutiveFailures: refreshState.consecutiveFailureCount
         )
+        let cachedQuotaHasReset = lastBuiltSnapshot?.quota.map {
+            now >= $0.resetsAt
+        } ?? false
+        let shouldRefreshQuota = decision.refreshQuota || cachedQuotaHasReset
+        let shouldIndexSessions = decision.indexSessions
+            || shouldRunScheduledSessionFallback(reason: reason, now: now)
+        if wasInitialized,
+           !shouldRefreshQuota,
+           !decision.refreshOfficialUsage,
+           !shouldIndexSessions,
+           let lastBuiltSnapshot,
+           canReuse(lastBuiltSnapshot, now: now) {
+            return lastBuiltSnapshot
+        }
 
-        if decision.refreshQuota, didInitialize {
+        if shouldRefreshQuota, didInitialize {
             let response: RateLimitsResponse?
             do {
                 response = try await accountClient.readRateLimits()
@@ -166,7 +183,8 @@ public actor UsageService {
             }
         }
 
-        if decision.indexSessions {
+        if shouldIndexSessions {
+            lastSessionIndexAttemptAt = now
             if let codexHome = homeResolver.resolve(
                 initializedHome: initializedHome,
                 environment: environment,
@@ -217,6 +235,7 @@ public actor UsageService {
         do {
             try await migrateIfNeeded()
             var refreshState = try await store.refreshState()
+            let storedRefreshState = refreshState
             let previousFailureCount = refreshState.consecutiveFailureCount
             if !didInitialize {
                 do {
@@ -238,6 +257,9 @@ public actor UsageService {
                         operationHadFailure: true
                     )
                     try await store.save(refreshState: refreshState)
+                    if refreshState != storedRefreshState {
+                        lastBuiltSnapshot = nil
+                    }
                     releaseOperation()
                     return nil
                 }
@@ -248,6 +270,9 @@ public actor UsageService {
                 operationHadFailure: false
             )
             try await store.save(refreshState: refreshState)
+            if refreshState != storedRefreshState {
+                lastBuiltSnapshot = nil
+            }
             releaseOperation()
         } catch {
             releaseOperation()
@@ -430,14 +455,37 @@ public actor UsageService {
             )
         )
         let refreshState = try await store.refreshState()
-        return refreshState.failedSources.isEmpty
+        let finalSnapshot = refreshState.failedSources.isEmpty
             ? snapshot
             : snapshot.markedStale()
+        lastBuiltSnapshot = finalSnapshot
+        return finalSnapshot
     }
 
     private func historyStart(now: Date) -> Date {
         calendar.date(byAdding: .day, value: -56, to: now)
             ?? now.addingTimeInterval(-56 * 24 * 60 * 60)
+    }
+
+    private func shouldRunScheduledSessionFallback(
+        reason: RefreshReason,
+        now: Date
+    ) -> Bool {
+        guard case .scheduled = reason else { return false }
+        guard let lastSessionIndexAttemptAt else { return true }
+        let age = now.timeIntervalSince(lastSessionIndexAttemptAt)
+        return age.isFinite && age >= 300
+    }
+
+    private func canReuse(_ snapshot: UsageSnapshot, now: Date) -> Bool {
+        guard snapshot.today.day == localDay(for: now) else { return false }
+        if let cycle = snapshot.currentCycle {
+            guard cycle.startsAt <= now, now < cycle.endsAt else { return false }
+        }
+        if let quota = snapshot.quota, now >= quota.resetsAt {
+            return false
+        }
+        return true
     }
 
     private func indexHistoryStart(now: Date) async throws -> Date {

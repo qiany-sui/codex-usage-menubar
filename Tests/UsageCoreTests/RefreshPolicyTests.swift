@@ -18,7 +18,7 @@ final class RefreshPolicyTests: XCTestCase {
         XCTAssertTrue(decision.indexSessions)
     }
 
-    func testScheduledRefreshUsesFiveAndThirtyMinuteIntervals() {
+    func testScheduledRefreshUsesRemoteIntervalsWithoutPeriodicSessionScan() {
         let now = Date(timeIntervalSince1970: 10_000)
         let decision = RefreshPolicy().decision(
             now: now,
@@ -30,7 +30,7 @@ final class RefreshPolicyTests: XCTestCase {
 
         XCTAssertTrue(decision.refreshQuota)
         XCTAssertTrue(decision.refreshOfficialUsage)
-        XCTAssertTrue(decision.indexSessions)
+        XCTAssertFalse(decision.indexSessions)
     }
 
     func testExactAgeBoundariesRefreshWithoutWaitingAnExtraSecond() {
@@ -64,7 +64,7 @@ final class RefreshPolicyTests: XCTestCase {
             RefreshDecision(
                 refreshQuota: true,
                 refreshOfficialUsage: true,
-                indexSessions: true
+                indexSessions: false
             )
         )
     }
@@ -81,7 +81,7 @@ final class RefreshPolicyTests: XCTestCase {
 
         XCTAssertFalse(decision.refreshQuota)
         XCTAssertFalse(decision.refreshOfficialUsage)
-        XCTAssertTrue(decision.indexSessions)
+        XCTAssertFalse(decision.indexSessions)
     }
 
     func testNegativeRefreshTimestampsAreDueWithoutOverflow() {
@@ -95,7 +95,7 @@ final class RefreshPolicyTests: XCTestCase {
 
         XCTAssertTrue(decision.refreshQuota)
         XCTAssertTrue(decision.refreshOfficialUsage)
-        XCTAssertTrue(decision.indexSessions)
+        XCTAssertFalse(decision.indexSessions)
     }
 
     func testImmediateReasonsRefreshEverythingAndFileChangesOnlyIndex() {

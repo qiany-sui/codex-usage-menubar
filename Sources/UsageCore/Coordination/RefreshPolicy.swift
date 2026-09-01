@@ -61,7 +61,7 @@ public struct RefreshPolicy: Sendable {
                     lastRefresh: lastOfficialRefresh,
                     interval: 1_800
                 ),
-                indexSessions: true
+                indexSessions: false
             )
         case .popoverOpened:
             return RefreshDecision(
