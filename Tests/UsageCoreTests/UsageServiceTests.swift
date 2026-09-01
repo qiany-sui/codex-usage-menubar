@@ -6,6 +6,7 @@ actor FakeAccountUsageClient: AccountUsageReading {
     let initialized: InitializeResult
     private var limits: RateLimitsResponse
     private var usage: AccountUsageResponse
+    private var initializeFailure: (any Error & Sendable)?
     private var rateLimitsFailure: (any Error & Sendable)?
     private var usageFailure: (any Error & Sendable)?
     private var queuedNotifications: [AppServerNotification] = []
@@ -26,6 +27,7 @@ actor FakeAccountUsageClient: AccountUsageReading {
 
     func initialize() async throws -> InitializeResult {
         initializeCallCount += 1
+        if let initializeFailure { throw initializeFailure }
         return initialized
     }
 
@@ -50,6 +52,10 @@ actor FakeAccountUsageClient: AccountUsageReading {
     func setFailure(_ value: RPCErrorPayload?) {
         rateLimitsFailure = value
         usageFailure = value
+    }
+
+    func setInitializeError(_ value: (any Error & Sendable)?) {
+        initializeFailure = value
     }
 
     func setRateLimitsFailure(_ value: RPCErrorPayload?) {
@@ -1099,6 +1105,19 @@ final class UsageServiceTests: XCTestCase {
         XCTAssertEqual(snapshot?.quota?.remainingPercent, 75)
         XCTAssertEqual(counts.initialize, 1)
         XCTAssertEqual(counts.limits, 1)
+    }
+
+    func testNotificationInitializationFailureReturnsNilWithoutPolling() async throws {
+        let fixture = try await ServiceFixture.make()
+        await fixture.accountClient.setInitializeError(rpcFailure())
+
+        let snapshot = try await fixture.service
+            .processNextAccountNotification(now: now)
+        let counts = await fixture.accountClient.callCounts()
+
+        XCTAssertNil(snapshot)
+        XCTAssertEqual(counts.initialize, 1)
+        XCTAssertEqual(counts.notification, 0)
     }
 
     func testUnselectableNotificationFallsBackToLatestFullRead() async throws {

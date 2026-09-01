@@ -183,3 +183,92 @@ func sampleSnapshot(
         status: status
     )
 }
+
+enum ControlledSleeperError: Error, Equatable, Sendable {
+    case requestNotFound(Duration)
+}
+
+actor ControlledSleeper {
+    private struct Request {
+        let id: UUID
+        let duration: Duration
+        let continuation: CheckedContinuation<Void, Error>
+    }
+
+    private var requests: [Request] = []
+    private var requested: [Duration] = []
+    private var resumed: [Duration] = []
+    private var cancelledIDs: Set<UUID> = []
+
+    func sleep(for duration: Duration) async throws {
+        let id = UUID()
+        try Task.checkCancellation()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation {
+                (continuation: CheckedContinuation<Void, Error>) in
+                if cancelledIDs.remove(id) != nil {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                requested.append(duration)
+                requests.append(
+                    Request(
+                        id: id,
+                        duration: duration,
+                        continuation: continuation
+                    )
+                )
+            }
+        } onCancel: {
+            Task {
+                await self.cancel(id: id)
+            }
+        }
+    }
+
+    func resumeNext(expected duration: Duration) async throws {
+        for _ in 0 ..< 2_000 {
+            if let index = requests.firstIndex(where: {
+                $0.duration == duration
+            }) {
+                let request = requests.remove(at: index)
+                resumed.append(duration)
+                request.continuation.resume()
+                return
+            }
+            await Task.yield()
+        }
+        throw ControlledSleeperError.requestNotFound(duration)
+    }
+
+    func waitForRequest(_ duration: Duration) async throws {
+        for _ in 0 ..< 2_000 {
+            if requests.contains(where: { $0.duration == duration }) {
+                return
+            }
+            await Task.yield()
+        }
+        throw ControlledSleeperError.requestNotFound(duration)
+    }
+
+    func requestedDurations() -> [Duration] {
+        requested
+    }
+
+    func resumedDurations() -> [Duration] {
+        resumed
+    }
+
+    func pendingRequestCount(for duration: Duration) -> Int {
+        requests.count(where: { $0.duration == duration })
+    }
+
+    private func cancel(id: UUID) {
+        guard let index = requests.firstIndex(where: { $0.id == id }) else {
+            cancelledIDs.insert(id)
+            return
+        }
+        let request = requests.remove(at: index)
+        request.continuation.resume(throwing: CancellationError())
+    }
+}

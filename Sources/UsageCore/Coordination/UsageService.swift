@@ -238,12 +238,8 @@ public actor UsageService {
                         operationHadFailure: true
                     )
                     try await store.save(refreshState: refreshState)
-                    let snapshot = try await buildSnapshot(
-                        now: now,
-                        updateCycles: false
-                    )
                     releaseOperation()
-                    return snapshot
+                    return nil
                 }
             }
             refreshState = finalizingFailureCount(

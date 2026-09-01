@@ -12,10 +12,12 @@ enum UsagePage: Hashable {
 struct UsageViewModelEnvironment: Sendable {
     let now: @Sendable () -> Date
     let sleep: @Sendable (Duration) async throws -> Void
+    let schedulerInterval: Duration
 
     static let live = UsageViewModelEnvironment(
         now: Date.init,
-        sleep: { try await Task.sleep(for: $0) }
+        sleep: { try await Task.sleep(for: $0) },
+        schedulerInterval: .seconds(60)
     )
 }
 
@@ -56,6 +58,17 @@ final class UsageViewModel: ObservableObject {
     private var nextRefreshID = 0
     private var lastAppliedRefreshID = -1
     private var activeRefreshCount = 0
+    private var runtimeID = 0
+    private var lifecycleGeneration = 0
+    private var notificationFailureCount = 0
+    private var schedulerTask: Task<Void, Never>?
+    private var watcherTask: Task<Void, Never>?
+    private var notificationTask: Task<Void, Never>?
+    private var retryTask: Task<Void, Never>?
+    private var lifecycleTransitionIsActive = false
+    private var lifecycleTransitionWaiters: [
+        CheckedContinuation<Void, Never>
+    ] = []
 
     init(
         runtimeBuilder: any UsageRuntimeBuilding,
@@ -90,21 +103,17 @@ final class UsageViewModel: ObservableObject {
         }
         currentCodexHome = restoredHome
 
-        do {
-            runtime = try await runtimeBuilder.makeRuntime(
-                codexHome: restoredHome
-            )
-            await refresh(reason: .startup)
-            if let runtime {
-                currentCodexHome = await runtime.service.resolvedCodexHome()
-                    ?? restoredHome
-            }
-        } catch {
-            applyRuntimeFailure(error)
-        }
+        let startGeneration = lifecycleGeneration
+        await installRuntime(
+            codexHome: restoredHome,
+            lifecycleGeneration: startGeneration
+        )
 
         isInitialLoading = false
         isRefreshing = activeRefreshCount > 0
+        guard !didStop else {
+            return
+        }
 
         guard currentCodexHome == nil, snapshot == nil else {
             needsCodexHomeSelection = false
@@ -143,8 +152,21 @@ final class UsageViewModel: ObservableObject {
         guard !didStop else {
             return
         }
+        let chooserGeneration = lifecycleGeneration
         guard let selectedURL = await chooseCodexHomeAction() else {
+            guard
+                !didStop,
+                lifecycleGeneration == chooserGeneration
+            else {
+                return
+            }
             needsCodexHomeSelection = true
+            return
+        }
+        guard
+            !didStop,
+            lifecycleGeneration == chooserGeneration
+        else {
             return
         }
         let codexHome = selectedURL.standardizedFileURL
@@ -160,25 +182,24 @@ final class UsageViewModel: ObservableObject {
             return
         }
 
-        let oldRuntime = runtime
-        runtime = nil
-        await oldRuntime?.stop()
+        let replacementGeneration = await stopBackgroundTasks()
+        guard
+            !didStop,
+            lifecycleGeneration == replacementGeneration
+        else {
+            return
+        }
         currentCodexHome = codexHome
         page = .overview
         fatalErrorMessage = nil
+        notificationFailureCount = 0
 
-        do {
-            runtime = try await runtimeBuilder.makeRuntime(
-                codexHome: codexHome
-            )
+        await installRuntime(
+            codexHome: codexHome,
+            lifecycleGeneration: replacementGeneration
+        )
+        if runtime != nil {
             needsCodexHomeSelection = false
-            await refresh(reason: .startup)
-            if let runtime {
-                currentCodexHome = await runtime.service.resolvedCodexHome()
-                    ?? codexHome
-            }
-        } catch {
-            applyRuntimeFailure(error)
         }
     }
 
@@ -187,19 +208,19 @@ final class UsageViewModel: ObservableObject {
             return
         }
         fatalErrorMessage = nil
-        if runtime != nil {
-            await refresh(reason: .manual)
+        notificationFailureCount = 0
+        let codexHome = currentCodexHome
+        let retryGeneration = await stopBackgroundTasks()
+        guard
+            !didStop,
+            lifecycleGeneration == retryGeneration
+        else {
             return
         }
-
-        do {
-            runtime = try await runtimeBuilder.makeRuntime(
-                codexHome: currentCodexHome
-            )
-            await refresh(reason: .startup)
-        } catch {
-            applyRuntimeFailure(error)
-        }
+        await installRuntime(
+            codexHome: codexHome,
+            lifecycleGeneration: retryGeneration
+        )
     }
 
     func showOverview() {
@@ -219,19 +240,93 @@ final class UsageViewModel: ObservableObject {
             return
         }
         didStop = true
-        let oldRuntime = runtime
-        runtime = nil
-        await oldRuntime?.stop()
+        await stopBackgroundTasks()
         bookmarkStore.releaseAccess()
     }
 
-    private func refresh(reason: RefreshReason) async {
+    private func installRuntime(
+        codexHome: URL?,
+        lifecycleGeneration expectedGeneration: Int
+    ) async {
+        await acquireLifecycleTransition()
+        defer { releaseLifecycleTransition() }
+        guard
+            !didStop,
+            lifecycleGeneration == expectedGeneration,
+            runtime == nil
+        else {
+            return
+        }
+        do {
+            let installedRuntime = try await runtimeBuilder.makeRuntime(
+                codexHome: codexHome
+            )
+            guard
+                !didStop,
+                lifecycleGeneration == expectedGeneration,
+                runtime == nil
+            else {
+                await installedRuntime.stop()
+                return
+            }
+            runtimeID += 1
+            let installedRuntimeID = runtimeID
+            runtime = installedRuntime
+
+            await refresh(
+                reason: .startup,
+                expectedRuntimeID: installedRuntimeID
+            )
+            guard
+                !didStop,
+                lifecycleGeneration == expectedGeneration,
+                runtimeID == installedRuntimeID,
+                runtime != nil
+            else {
+                return
+            }
+
+            let resolvedCodexHome = await installedRuntime.service
+                .resolvedCodexHome()
+            guard
+                !didStop,
+                lifecycleGeneration == expectedGeneration,
+                runtimeID == installedRuntimeID,
+                runtime != nil
+            else {
+                return
+            }
+            currentCodexHome = resolvedCodexHome ?? codexHome
+            startBackgroundTasks(
+                runtime: installedRuntime,
+                runtimeID: installedRuntimeID,
+                codexHome: currentCodexHome
+            )
+        } catch {
+            guard
+                !didStop,
+                lifecycleGeneration == expectedGeneration
+            else {
+                return
+            }
+            applyRuntimeFailure(error)
+        }
+    }
+
+    private func refresh(
+        reason: RefreshReason,
+        expectedRuntimeID: Int? = nil
+    ) async {
         guard let runtime else {
             return
         }
+        let requestedRuntimeID = runtimeID
+        if let expectedRuntimeID,
+           expectedRuntimeID != requestedRuntimeID {
+            return
+        }
 
-        let requestID = nextRefreshID
-        nextRefreshID += 1
+        let requestID = takeRefreshID()
         activeRefreshCount += 1
         isRefreshing = !isInitialLoading
         defer {
@@ -244,27 +339,256 @@ final class UsageViewModel: ObservableObject {
                 reason: reason,
                 now: environment.now()
             )
-            guard requestID >= lastAppliedRefreshID else {
+            guard
+                runtimeID == requestedRuntimeID,
+                requestID >= lastAppliedRefreshID
+            else {
                 return
             }
             lastAppliedRefreshID = requestID
             snapshot = value
             fatalErrorMessage = nil
+            if reason != .startup, value.status != .stale {
+                notificationFailureCount = 0
+            }
         } catch is CancellationError {
             return
         } catch is SQLiteStoreError {
-            guard requestID >= lastAppliedRefreshID else {
+            guard
+                runtimeID == requestedRuntimeID,
+                requestID >= lastAppliedRefreshID
+            else {
                 return
             }
             lastAppliedRefreshID = requestID
             fatalErrorMessage = Self.databaseFailureMessage
         } catch {
-            guard requestID >= lastAppliedRefreshID else {
+            guard
+                runtimeID == requestedRuntimeID,
+                requestID >= lastAppliedRefreshID
+            else {
                 return
             }
             lastAppliedRefreshID = requestID
             fatalErrorMessage = nil
         }
+    }
+
+    private func startBackgroundTasks(
+        runtime: UsageRuntime,
+        runtimeID: Int,
+        codexHome: URL?
+    ) {
+        notificationTask = Task { [weak self] in
+            await self?.consumeAccountNotifications(
+                runtime: runtime,
+                runtimeID: runtimeID
+            )
+        }
+
+        let sleep = environment.sleep
+        let schedulerInterval = environment.schedulerInterval
+        schedulerTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await sleep(schedulerInterval)
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled else {
+                    return
+                }
+                await self?.refresh(
+                    reason: .scheduled,
+                    expectedRuntimeID: runtimeID
+                )
+            }
+        }
+
+        guard let codexHome else {
+            return
+        }
+        let directories = watchedDirectories(for: codexHome)
+        guard !directories.isEmpty else {
+            return
+        }
+        watcherTask = Task { [weak self] in
+            let changes = await runtime.watcher.changes(
+                for: directories
+            )
+            for await _ in changes {
+                guard !Task.isCancelled else {
+                    return
+                }
+                await self?.refresh(
+                    reason: .sessionFilesChanged,
+                    expectedRuntimeID: runtimeID
+                )
+            }
+        }
+    }
+
+    private func consumeAccountNotifications(
+        runtime: UsageRuntime,
+        runtimeID: Int
+    ) async {
+        while !Task.isCancelled {
+            do {
+                let value = try await runtime.service
+                    .processNextAccountNotification(now: environment.now())
+                guard !Task.isCancelled, self.runtimeID == runtimeID else {
+                    return
+                }
+                guard let value else {
+                    scheduleNotificationReconnect(runtimeID: runtimeID)
+                    return
+                }
+
+                let requestID = takeRefreshID()
+                if requestID >= lastAppliedRefreshID {
+                    lastAppliedRefreshID = requestID
+                    snapshot = value
+                    fatalErrorMessage = nil
+                }
+                notificationFailureCount = 0
+            } catch is CancellationError {
+                return
+            } catch is SQLiteStoreError {
+                guard self.runtimeID == runtimeID else {
+                    return
+                }
+                let requestID = takeRefreshID()
+                if requestID >= lastAppliedRefreshID {
+                    lastAppliedRefreshID = requestID
+                    fatalErrorMessage = Self.databaseFailureMessage
+                }
+                return
+            } catch {
+                guard self.runtimeID == runtimeID else {
+                    return
+                }
+                scheduleNotificationReconnect(runtimeID: runtimeID)
+                return
+            }
+        }
+    }
+
+    private func scheduleNotificationReconnect(runtimeID: Int) {
+        guard
+            !didStop,
+            self.runtimeID == runtimeID,
+            retryTask == nil
+        else {
+            return
+        }
+
+        let delay = refreshPolicy.retryDelay(
+            consecutiveFailures: notificationFailureCount
+        )
+        notificationFailureCount += 1
+        let sleep = environment.sleep
+        retryTask = Task { [weak self] in
+            do {
+                try await sleep(delay)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else {
+                return
+            }
+            await self?.rebuildRuntimeAfterNotificationFailure(
+                runtimeID: runtimeID
+            )
+        }
+    }
+
+    private func rebuildRuntimeAfterNotificationFailure(
+        runtimeID: Int
+    ) async {
+        guard !didStop, self.runtimeID == runtimeID else {
+            return
+        }
+        retryTask = nil
+        let codexHome = currentCodexHome
+        let replacementGeneration = await stopBackgroundTasks()
+        guard
+            !didStop,
+            lifecycleGeneration == replacementGeneration
+        else {
+            return
+        }
+        await installRuntime(
+            codexHome: codexHome,
+            lifecycleGeneration: replacementGeneration
+        )
+    }
+
+    @discardableResult
+    private func stopBackgroundTasks() async -> Int {
+        await acquireLifecycleTransition()
+        defer { releaseLifecycleTransition() }
+        lifecycleGeneration += 1
+        let stoppingGeneration = lifecycleGeneration
+        let tasks = [
+            schedulerTask,
+            watcherTask,
+            notificationTask,
+            retryTask
+        ].compactMap { $0 }
+        schedulerTask = nil
+        watcherTask = nil
+        notificationTask = nil
+        retryTask = nil
+        tasks.forEach { $0.cancel() }
+
+        let oldRuntime = runtime
+        runtime = nil
+        runtimeID += 1
+        await oldRuntime?.stop()
+        for task in tasks {
+            await task.value
+        }
+        return stoppingGeneration
+    }
+
+    private func acquireLifecycleTransition() async {
+        guard lifecycleTransitionIsActive else {
+            lifecycleTransitionIsActive = true
+            return
+        }
+        await withCheckedContinuation { continuation in
+            lifecycleTransitionWaiters.append(continuation)
+        }
+    }
+
+    private func releaseLifecycleTransition() {
+        guard !lifecycleTransitionWaiters.isEmpty else {
+            lifecycleTransitionIsActive = false
+            return
+        }
+        lifecycleTransitionWaiters.removeFirst().resume()
+    }
+
+    private func watchedDirectories(for codexHome: URL) -> [URL] {
+        ["sessions", "archived_sessions"]
+            .map {
+                codexHome.appendingPathComponent(
+                    $0,
+                    isDirectory: true
+                )
+            }
+            .filter { url in
+                var isDirectory = ObjCBool(false)
+                return FileManager.default.fileExists(
+                    atPath: url.path,
+                    isDirectory: &isDirectory
+                ) && isDirectory.boolValue
+            }
+    }
+
+    private func takeRefreshID() -> Int {
+        defer { nextRefreshID += 1 }
+        return nextRefreshID
     }
 
     private func requestCodexHomeAutomaticallyOnce() async {

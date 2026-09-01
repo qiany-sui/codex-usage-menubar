@@ -193,6 +193,434 @@ final class UsageViewModelTests: XCTestCase {
         XCTAssertEqual(fixture.viewModel.menuBarTitle, "◔ 45%")
         await fixture.viewModel.stop()
     }
+
+    func testScheduledLoopRefreshesEverySixtySeconds() async throws {
+        let fixture = ViewModelFixture(snapshot: try sampleSnapshot())
+        await fixture.viewModel.start()
+
+        try await fixture.sleeper.resumeNext(expected: .seconds(60))
+        await fixture.service.waitForReason(.scheduled)
+
+        let reasons = await fixture.service.reasons()
+        XCTAssertTrue(reasons.contains(.scheduled))
+        await fixture.viewModel.stop()
+    }
+
+    func testSessionChangeMapsToLocalOnlyReason() async throws {
+        let codexHome = try trackedValidCodexHome()
+        let fixture = ViewModelFixture(
+            snapshot: try sampleSnapshot(),
+            resolvedHome: codexHome
+        )
+        await fixture.viewModel.start()
+
+        await fixture.watcher.sendChange()
+        await fixture.service.waitForReason(.sessionFilesChanged)
+
+        let reasons = await fixture.service.reasons()
+        XCTAssertEqual(reasons.last, .sessionFilesChanged)
+        await fixture.viewModel.stop()
+    }
+
+    func testNotificationSnapshotPublishesWithoutFullRefresh() async throws {
+        let updated = try sampleSnapshot(remainingPercent: 48)
+        let fixture = ViewModelFixture(snapshot: try sampleSnapshot())
+        await fixture.service.enqueueNotification(updated)
+
+        await fixture.viewModel.start()
+        await fixture.waitUntilSnapshotEquals(updated)
+
+        XCTAssertEqual(fixture.viewModel.menuBarTitle, "◔ 48%")
+        await fixture.viewModel.stop()
+    }
+
+    func testParkedNotificationPublishesAfterNewerManualRefresh() async throws {
+        let manual = try sampleSnapshot(remainingPercent: 40)
+        let notification = try sampleSnapshot(remainingPercent: 48)
+        let fixture = ViewModelFixture(snapshot: try sampleSnapshot())
+        await fixture.viewModel.start()
+        await fixture.waitUntilNotificationCallCount(1)
+        await fixture.service.suspendNext(.manual)
+
+        let manualTask = Task {
+            await fixture.viewModel.refreshManually()
+        }
+        await fixture.service.waitForReason(.manual)
+        await fixture.service.resumeNext(.manual, with: .success(manual))
+        await manualTask.value
+        await fixture.service.enqueueNotification(notification)
+        await fixture.waitUntilSnapshotEquals(notification)
+
+        XCTAssertEqual(fixture.viewModel.menuBarTitle, "◔ 48%")
+        await fixture.viewModel.stop()
+    }
+
+    func testStaleNotificationKeepsConsumingWithoutReconnect() async throws {
+        let stale = try sampleSnapshot(
+            status: .stale,
+            remainingPercent: 51
+        )
+        let next = try sampleSnapshot(remainingPercent: 49)
+        let fixture = ViewModelFixture(snapshot: try sampleSnapshot())
+        await fixture.viewModel.start()
+        await fixture.waitUntilNotificationCallCount(1)
+
+        await fixture.service.enqueueNotification(stale)
+        await fixture.waitUntilSnapshotEquals(stale)
+        await fixture.waitUntilNotificationCallCount(2)
+
+        XCTAssertEqual(fixture.runtimeBuilder.buildCount, 1)
+        let retries = await fixture.sleeper.pendingRequestCount(
+            for: .seconds(30)
+        )
+        XCTAssertEqual(retries, 0)
+
+        await fixture.service.enqueueNotification(next)
+        await fixture.waitUntilSnapshotEquals(next)
+        await fixture.viewModel.stop()
+    }
+
+    func testNotificationEOFBacksOffThenBuildsFreshRuntime() async throws {
+        let fixture = ViewModelFixture(
+            snapshot: try sampleSnapshot(),
+            notificationResults: [nil]
+        )
+        await fixture.viewModel.start()
+        try await fixture.sleeper.waitForRequest(.seconds(30))
+
+        XCTAssertEqual(fixture.runtimeBuilder.buildCount, 1)
+        try await fixture.sleeper.resumeNext(expected: .seconds(30))
+        await fixture.runtimeBuilder.waitForBuildCount(2)
+
+        XCTAssertEqual(fixture.runtimeBuilder.buildCount, 2)
+        XCTAssertEqual(fixture.runtimeBuilder.stopCount, 1)
+        await fixture.viewModel.stop()
+    }
+
+    func testRepeatedNotificationEOFUsesCappedRefreshPolicyBackoff() async throws {
+        let fixture = ViewModelFixture(
+            snapshot: try sampleSnapshot(),
+            everyNotificationEnds: true,
+            schedulerInterval: .seconds(61)
+        )
+        await fixture.viewModel.start()
+
+        let expectedSeconds = [30, 60, 120, 240, 480, 900, 900]
+        for (index, seconds) in expectedSeconds.enumerated() {
+            try await fixture.sleeper.resumeNext(
+                expected: .seconds(seconds)
+            )
+            await fixture.runtimeBuilder.waitForBuildCount(index + 2)
+        }
+
+        let resumed = await fixture.sleeper.resumedDurations()
+        XCTAssertEqual(
+            Array(resumed.suffix(expectedSeconds.count)),
+            expectedSeconds.map { .seconds($0) }
+        )
+        await fixture.viewModel.stop()
+    }
+
+    func testStopCancelsLoopsStopsWatcherRuntimeAndBookmarkAccess() async throws {
+        let fixture = ViewModelFixture(snapshot: try sampleSnapshot())
+        await fixture.viewModel.start()
+
+        await fixture.viewModel.stop()
+        await fixture.watcher.sendChange()
+
+        XCTAssertEqual(fixture.runtimeBuilder.stopCount, 1)
+        XCTAssertEqual(fixture.bookmarkStore.releaseCount, 1)
+        let reasons = await fixture.service.reasons()
+        XCTAssertEqual(reasons, [.startup])
+    }
+
+    func testWatcherConsumesEveryOutputWithoutAddingItsOwnDebounce() async throws {
+        let codexHome = try trackedValidCodexHome()
+        let fixture = ViewModelFixture(
+            snapshot: try sampleSnapshot(),
+            resolvedHome: codexHome
+        )
+        await fixture.viewModel.start()
+
+        await fixture.watcher.sendChange()
+        await fixture.watcher.sendChange()
+        await fixture.watcher.sendChange()
+        await fixture.service.waitForReasonCount(
+            .sessionFilesChanged,
+            count: 3
+        )
+
+        let reasons = await fixture.service.reasons()
+        XCTAssertEqual(
+            reasons.filter { $0 == .sessionFilesChanged }.count,
+            3
+        )
+        await fixture.viewModel.stop()
+    }
+
+    func testChoosingNewDirectoryStopsOldRuntimeBeforeStartingNewLoops() async throws {
+        let oldHome = try trackedValidCodexHome()
+        let newHome = try trackedValidCodexHome()
+        let fixture = ViewModelFixture(
+            snapshot: try sampleSnapshot(),
+            resolvedHome: oldHome,
+            chosenHome: newHome
+        )
+        await fixture.viewModel.start()
+
+        await fixture.viewModel.chooseCodexHome()
+
+        XCTAssertEqual(fixture.runtimeBuilder.buildCount, 2)
+        XCTAssertEqual(fixture.runtimeBuilder.stopCount, 1)
+        XCTAssertEqual(
+            fixture.bookmarkStore.savedURLs,
+            [newHome.standardizedFileURL]
+        )
+        try await fixture.sleeper.waitForRequest(.seconds(60))
+        let schedulerCount = await fixture.sleeper.pendingRequestCount(
+            for: .seconds(60)
+        )
+        XCTAssertEqual(schedulerCount, 1)
+        await fixture.viewModel.stop()
+    }
+
+    func testManualRefreshRunsImmediatelyDuringNotificationBackoff() async throws {
+        let fixture = ViewModelFixture(
+            snapshot: try sampleSnapshot(),
+            notificationResults: [nil]
+        )
+        await fixture.viewModel.start()
+        try await fixture.sleeper.waitForRequest(.seconds(30))
+
+        await fixture.viewModel.refreshManually()
+
+        let reasons = await fixture.service.reasons()
+        XCTAssertEqual(reasons, [.startup, .manual])
+        await fixture.viewModel.stop()
+    }
+
+    func testSuccessfulNotificationResetsEOFBackoff() async throws {
+        let updated = try sampleSnapshot(remainingPercent: 51)
+        let fixture = ViewModelFixture(
+            snapshot: try sampleSnapshot(),
+            notificationResults: [nil]
+        )
+        await fixture.viewModel.start()
+        try await fixture.sleeper.resumeNext(expected: .seconds(30))
+        await fixture.runtimeBuilder.waitForBuildCount(2)
+
+        await fixture.service.enqueueNotification(updated)
+        await fixture.waitUntilSnapshotEquals(updated)
+        await fixture.service.enqueueNotificationEOF()
+        try await fixture.sleeper.resumeNext(expected: .seconds(30))
+
+        let resumed = await fixture.sleeper.resumedDurations()
+        XCTAssertEqual(Array(resumed.suffix(2)), [.seconds(30), .seconds(30)])
+        await fixture.viewModel.stop()
+    }
+
+    func testNotificationSQLiteFailureWaitsForManualRuntimeRetry() async throws {
+        let updated = try sampleSnapshot(remainingPercent: 47)
+        let fixture = ViewModelFixture(snapshot: try sampleSnapshot())
+        await fixture.viewModel.start()
+        await fixture.waitUntilNotificationCallCount(1)
+
+        await fixture.service.enqueueNotificationSQLiteFailure()
+        await fixture.waitUntilFatalError()
+
+        XCTAssertEqual(fixture.runtimeBuilder.buildCount, 1)
+        let automaticRetries = await fixture.sleeper.pendingRequestCount(
+            for: .seconds(30)
+        )
+        XCTAssertEqual(automaticRetries, 0)
+
+        await fixture.viewModel.retryFatalError()
+        XCTAssertEqual(fixture.runtimeBuilder.buildCount, 2)
+        XCTAssertEqual(fixture.runtimeBuilder.stopCount, 1)
+        await fixture.waitUntilNotificationCallCount(2)
+        await fixture.service.enqueueNotification(updated)
+        await fixture.waitUntilSnapshotEquals(updated)
+
+        XCTAssertNil(fixture.viewModel.fatalErrorMessage)
+        await fixture.viewModel.stop()
+    }
+
+    func testNonSQLiteNotificationFailureUsesReconnectBackoff() async throws {
+        let fixture = ViewModelFixture(snapshot: try sampleSnapshot())
+        await fixture.viewModel.start()
+        await fixture.waitUntilNotificationCallCount(1)
+
+        await fixture.service.enqueueNotificationFailure()
+        try await fixture.sleeper.waitForRequest(.seconds(30))
+        XCTAssertEqual(fixture.runtimeBuilder.buildCount, 1)
+
+        try await fixture.sleeper.resumeNext(expected: .seconds(30))
+        await fixture.runtimeBuilder.waitForBuildCount(2)
+        XCTAssertEqual(fixture.runtimeBuilder.stopCount, 1)
+        await fixture.viewModel.stop()
+    }
+
+    func testStartingTwiceDoesNotDuplicateRuntimeOrScheduler() async throws {
+        let fixture = ViewModelFixture(snapshot: try sampleSnapshot())
+
+        await fixture.viewModel.start()
+        await fixture.viewModel.start()
+
+        XCTAssertEqual(fixture.runtimeBuilder.buildCount, 1)
+        try await fixture.sleeper.waitForRequest(.seconds(60))
+        let schedulerCount = await fixture.sleeper.pendingRequestCount(
+            for: .seconds(60)
+        )
+        XCTAssertEqual(schedulerCount, 1)
+        await fixture.viewModel.stop()
+    }
+
+    func testStopDuringRuntimeBuildStopsLateRuntime() async throws {
+        let fixture = ViewModelFixture(snapshot: try sampleSnapshot())
+        fixture.runtimeBuilder.suspendNextBuild()
+        let startTask = Task {
+            await fixture.viewModel.start()
+        }
+        await fixture.runtimeBuilder.waitForBuildCount(1)
+
+        let stopTask = Task {
+            await fixture.viewModel.stop()
+        }
+        for _ in 0 ..< 100 {
+            await Task.yield()
+        }
+        fixture.runtimeBuilder.resumeNextBuild()
+        await startTask.value
+        await stopTask.value
+
+        XCTAssertEqual(fixture.runtimeBuilder.stopCount, 1)
+        XCTAssertEqual(fixture.bookmarkStore.releaseCount, 1)
+    }
+
+    func testStopWhileChooserIsOpenDoesNotSaveOrBuild() async throws {
+        let chosenHome = try trackedValidCodexHome()
+        let fixture = ViewModelFixture(
+            snapshot: try sampleSnapshot(),
+            chosenHome: chosenHome
+        )
+        await fixture.viewModel.start()
+        fixture.chooser.suspendNextCall()
+        let chooseTask = Task {
+            await fixture.viewModel.chooseCodexHome()
+        }
+        await fixture.chooser.waitForCallCount(1)
+
+        await fixture.viewModel.stop()
+        fixture.chooser.resumeNextCall()
+        await chooseTask.value
+
+        XCTAssertTrue(fixture.bookmarkStore.savedURLs.isEmpty)
+        XCTAssertEqual(fixture.runtimeBuilder.buildCount, 1)
+        XCTAssertEqual(fixture.runtimeBuilder.stopCount, 1)
+    }
+
+    func testDirectoryChoiceWinsAgainstSuspendedReconnectBuild() async throws {
+        let oldHome = try trackedValidCodexHome()
+        let newHome = try trackedValidCodexHome()
+        let fixture = ViewModelFixture(
+            snapshot: try sampleSnapshot(),
+            resolvedHome: oldHome,
+            chosenHome: newHome,
+            notificationResults: [nil]
+        )
+        await fixture.viewModel.start()
+        try await fixture.sleeper.waitForRequest(.seconds(30))
+        fixture.runtimeBuilder.suspendNextBuild()
+        try await fixture.sleeper.resumeNext(expected: .seconds(30))
+        await fixture.runtimeBuilder.waitForBuildCount(2)
+
+        let chooseTask = Task {
+            await fixture.viewModel.chooseCodexHome()
+        }
+        await fixture.waitUntilSavedURLCount(1)
+        for _ in 0 ..< 100 {
+            await Task.yield()
+        }
+        XCTAssertEqual(fixture.runtimeBuilder.buildCount, 2)
+        fixture.runtimeBuilder.resumeNextBuild()
+        await chooseTask.value
+        XCTAssertEqual(fixture.runtimeBuilder.buildCount, 3)
+        await fixture.waitUntilStopCount(2)
+
+        XCTAssertEqual(
+            fixture.bookmarkStore.savedURLs,
+            [newHome.standardizedFileURL]
+        )
+        await fixture.viewModel.stop()
+        XCTAssertEqual(fixture.runtimeBuilder.stopCount, 3)
+    }
+
+    func testDirectoryChoiceWaitsForInFlightRuntimeStop() async throws {
+        let oldHome = try trackedValidCodexHome()
+        let newHome = try trackedValidCodexHome()
+        let fixture = ViewModelFixture(
+            snapshot: try sampleSnapshot(),
+            resolvedHome: oldHome,
+            chosenHome: newHome,
+            notificationResults: [nil]
+        )
+        await fixture.viewModel.start()
+        try await fixture.sleeper.waitForRequest(.seconds(30))
+        fixture.runtimeBuilder.suspendNextStop()
+        try await fixture.sleeper.resumeNext(expected: .seconds(30))
+        await fixture.runtimeBuilder.waitForStopAttemptCount(1)
+
+        let chooseTask = Task {
+            await fixture.viewModel.chooseCodexHome()
+        }
+        await fixture.waitUntilSavedURLCount(1)
+        for _ in 0 ..< 100 {
+            await Task.yield()
+        }
+
+        XCTAssertEqual(fixture.runtimeBuilder.buildCount, 1)
+        fixture.runtimeBuilder.resumeNextStop()
+        await chooseTask.value
+        XCTAssertEqual(fixture.runtimeBuilder.buildCount, 2)
+        await fixture.viewModel.stop()
+    }
+
+    func testStopWaitsForLateRuntimeBuildCleanup() async throws {
+        let fixture = ViewModelFixture(snapshot: try sampleSnapshot())
+        let probe = LifecycleCompletionProbe()
+        fixture.runtimeBuilder.suspendNextBuild()
+        let startTask = Task {
+            await fixture.viewModel.start()
+        }
+        await fixture.runtimeBuilder.waitForBuildCount(1)
+        let stopTask = Task {
+            await probe.markStarted()
+            await fixture.viewModel.stop()
+            await probe.markCompleted()
+        }
+        await probe.waitUntilStarted()
+        for _ in 0 ..< 100 {
+            await Task.yield()
+        }
+
+        let completedBeforeBuild = await probe.isCompleted()
+        XCTAssertFalse(completedBeforeBuild)
+        fixture.runtimeBuilder.resumeNextBuild()
+        await startTask.value
+        await stopTask.value
+
+        let completedAfterBuild = await probe.isCompleted()
+        XCTAssertTrue(completedAfterBuild)
+        XCTAssertEqual(fixture.runtimeBuilder.stopCount, 1)
+    }
+
+    private func trackedValidCodexHome() throws -> URL {
+        let root = try validCodexHome()
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: root)
+        }
+        return root
+    }
 }
 
 private enum FakeViewModelError: Error, Sendable {
@@ -213,25 +641,52 @@ private enum FakeRefreshOutcome: Sendable {
     }
 }
 
+private enum FakeNotificationEvent: Sendable {
+    case snapshot(UsageSnapshot)
+    case end
+    case sqliteFailure
+    case unavailable
+}
+
 private actor FakeUsageService: UsageServicing {
     private let defaultOutcome: FakeRefreshOutcome
-    private let home: URL?
+    private let notificationStream: AsyncStream<FakeNotificationEvent>
+    private let notificationContinuation:
+        AsyncStream<FakeNotificationEvent>.Continuation
+    private let everyNotificationEnds: Bool
+    private var home: URL?
     private var recordedReasons: [RecordedRefreshReason] = []
     private var suspendedCounts: [RecordedRefreshReason: Int] = [:]
     private var pending: [RecordedRefreshReason: [CheckedContinuation<UsageSnapshot, Error>]] = [:]
-    private var reasonWaiters: [RecordedRefreshReason: [CheckedContinuation<Void, Never>]] = [:]
+    private var reasonWaiters: [ReasonWaiter] = []
+    private var notificationCallCount = 0
 
-    init(defaultOutcome: FakeRefreshOutcome, home: URL?) {
+    init(
+        defaultOutcome: FakeRefreshOutcome,
+        home: URL?,
+        notificationResults: [UsageSnapshot?],
+        everyNotificationEnds: Bool
+    ) {
         self.defaultOutcome = defaultOutcome
         self.home = home
+        self.everyNotificationEnds = everyNotificationEnds
+        let pair = AsyncStream<FakeNotificationEvent>.makeStream()
+        notificationStream = pair.stream
+        notificationContinuation = pair.continuation
+        for result in notificationResults {
+            if let result {
+                pair.continuation.yield(.snapshot(result))
+            } else {
+                pair.continuation.yield(.end)
+            }
+        }
     }
 
     func refresh(reason: RefreshReason, now: Date) async throws -> UsageSnapshot {
         _ = now
         let recorded = RecordedRefreshReason(reason)
         recordedReasons.append(recorded)
-        let waiters = reasonWaiters.removeValue(forKey: recorded) ?? []
-        waiters.forEach { $0.resume() }
+        resumeSatisfiedReasonWaiters()
 
         let suspendedCount = suspendedCounts[recorded, default: 0]
         guard suspendedCount > 0 else {
@@ -245,6 +700,28 @@ private actor FakeUsageService: UsageServicing {
 
     func processNextAccountNotification(now: Date) async throws -> UsageSnapshot? {
         _ = now
+        notificationCallCount += 1
+        if everyNotificationEnds {
+            return nil
+        }
+        for await event in notificationStream {
+            guard !Task.isCancelled else {
+                return nil
+            }
+            switch event {
+            case let .snapshot(snapshot):
+                return snapshot
+            case .end:
+                return nil
+            case .sqliteFailure:
+                throw SQLiteStoreError.operationFailed(
+                    operation: "notification",
+                    code: 11
+                )
+            case .unavailable:
+                throw FakeViewModelError.unavailable
+            }
+        }
         return nil
     }
 
@@ -261,13 +738,50 @@ private actor FakeUsageService: UsageServicing {
         recordedReasons
     }
 
+    func notificationCalls() -> Int {
+        notificationCallCount
+    }
+
     func waitForReason(_ value: RecordedRefreshReason) async {
-        if recordedReasons.contains(value) {
+        await waitForReasonCount(value, count: 1)
+    }
+
+    func waitForReasonCount(
+        _ value: RecordedRefreshReason,
+        count: Int
+    ) async {
+        if recordedReasons.count(where: { $0 == value }) >= count {
             return
         }
         await withCheckedContinuation { continuation in
-            reasonWaiters[value, default: []].append(continuation)
+            reasonWaiters.append(
+                ReasonWaiter(
+                    reason: value,
+                    count: count,
+                    continuation: continuation
+                )
+            )
         }
+    }
+
+    func enqueueNotification(_ snapshot: UsageSnapshot) {
+        notificationContinuation.yield(.snapshot(snapshot))
+    }
+
+    func enqueueNotificationEOF() {
+        notificationContinuation.yield(.end)
+    }
+
+    func enqueueNotificationSQLiteFailure() {
+        notificationContinuation.yield(.sqliteFailure)
+    }
+
+    func enqueueNotificationFailure() {
+        notificationContinuation.yield(.unavailable)
+    }
+
+    func setResolvedCodexHome(_ url: URL?) {
+        home = url
     }
 
     func suspendNext(_ reason: RecordedRefreshReason) {
@@ -289,21 +803,67 @@ private actor FakeUsageService: UsageServicing {
             continuation.resume(throwing: error)
         }
     }
+
+    private func resumeSatisfiedReasonWaiters() {
+        var remaining: [ReasonWaiter] = []
+        for waiter in reasonWaiters {
+            let count = recordedReasons.count(where: {
+                $0 == waiter.reason
+            })
+            if count >= waiter.count {
+                waiter.continuation.resume()
+            } else {
+                remaining.append(waiter)
+            }
+        }
+        reasonWaiters = remaining
+    }
+
+    private struct ReasonWaiter {
+        let reason: RecordedRefreshReason
+        let count: Int
+        let continuation: CheckedContinuation<Void, Never>
+    }
 }
 
 private actor FakeSessionWatcher: SessionChangeWatching {
     private var continuation: AsyncStream<Void>.Continuation?
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var isStopped = false
 
     func changes(for directories: [URL]) async -> AsyncStream<Void> {
         _ = directories
         let pair = AsyncStream<Void>.makeStream()
         continuation = pair.continuation
+        isStopped = false
+        let waiters = startWaiters
+        startWaiters.removeAll()
+        waiters.forEach { $0.resume() }
         return pair.stream
     }
 
     func stop() async {
+        isStopped = true
         continuation?.finish()
         continuation = nil
+        let waiters = startWaiters
+        startWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+    }
+
+    func sendChange() async {
+        if isStopped {
+            return
+        }
+        if continuation == nil {
+            await withCheckedContinuation { value in
+                startWaiters.append(value)
+            }
+        }
+        guard !isStopped else {
+            return
+        }
+        continuation?.yield()
     }
 }
 
@@ -313,6 +873,13 @@ private final class FakeRuntimeBuilder: UsageRuntimeBuilding {
     let watcher: FakeSessionWatcher
     private(set) var buildCount = 0
     private(set) var stopCount = 0
+    private var buildWaiters: [BuildWaiter] = []
+    private var suspendedBuildCount = 0
+    private var pendingBuilds: [CheckedContinuation<Void, Never>] = []
+    private var suspendedStopCount = 0
+    private var pendingStops: [CheckedContinuation<Void, Never>] = []
+    private var stopAttemptCount = 0
+    private var stopAttemptWaiters: [BuildWaiter] = []
 
     init(service: FakeUsageService, watcher: FakeSessionWatcher) {
         self.service = service
@@ -320,17 +887,111 @@ private final class FakeRuntimeBuilder: UsageRuntimeBuilding {
     }
 
     func makeRuntime(codexHome: URL?) async throws -> UsageRuntime {
-        _ = codexHome
         buildCount += 1
+        resumeSatisfiedBuildWaiters()
+        if suspendedBuildCount > 0 {
+            suspendedBuildCount -= 1
+            await withCheckedContinuation { continuation in
+                pendingBuilds.append(continuation)
+            }
+        }
+        if let codexHome {
+            await service.setResolvedCodexHome(codexHome)
+        }
+        let runtimeWatcher = watcher
         return UsageRuntime(
             service: service,
-            watcher: watcher,
+            watcher: runtimeWatcher,
             stop: { [weak self] in
-                await MainActor.run {
-                    self?.stopCount += 1
-                }
+                await runtimeWatcher.stop()
+                await self?.finishRuntimeStop()
             }
         )
+    }
+
+    func suspendNextBuild() {
+        suspendedBuildCount += 1
+    }
+
+    func resumeNextBuild() {
+        guard !pendingBuilds.isEmpty else {
+            return
+        }
+        pendingBuilds.removeFirst().resume()
+    }
+
+    func suspendNextStop() {
+        suspendedStopCount += 1
+    }
+
+    func resumeNextStop() {
+        guard !pendingStops.isEmpty else {
+            return
+        }
+        pendingStops.removeFirst().resume()
+    }
+
+    func waitForBuildCount(_ value: Int) async {
+        if buildCount >= value {
+            return
+        }
+        await withCheckedContinuation { continuation in
+            buildWaiters.append(
+                BuildWaiter(count: value, continuation: continuation)
+            )
+        }
+    }
+
+    func waitForStopAttemptCount(_ value: Int) async {
+        if stopAttemptCount >= value {
+            return
+        }
+        await withCheckedContinuation { continuation in
+            stopAttemptWaiters.append(
+                BuildWaiter(count: value, continuation: continuation)
+            )
+        }
+    }
+
+    private func finishRuntimeStop() async {
+        stopAttemptCount += 1
+        resumeSatisfiedStopAttemptWaiters()
+        if suspendedStopCount > 0 {
+            suspendedStopCount -= 1
+            await withCheckedContinuation { continuation in
+                pendingStops.append(continuation)
+            }
+        }
+        stopCount += 1
+    }
+
+    private func resumeSatisfiedBuildWaiters() {
+        var remaining: [BuildWaiter] = []
+        for waiter in buildWaiters {
+            if buildCount >= waiter.count {
+                waiter.continuation.resume()
+            } else {
+                remaining.append(waiter)
+            }
+        }
+        buildWaiters = remaining
+    }
+
+    private func resumeSatisfiedStopAttemptWaiters() {
+        var remaining: [BuildWaiter] = []
+        for waiter in stopAttemptWaiters {
+            if stopAttemptCount >= waiter.count {
+                waiter.continuation.resume()
+            } else {
+                remaining.append(waiter)
+            }
+        }
+        stopAttemptWaiters = remaining
+    }
+
+    private struct BuildWaiter {
+        let count: Int
+        let continuation: CheckedContinuation<Void, Never>
     }
 }
 
@@ -363,6 +1024,8 @@ private final class FakeBookmarkStore: CodexHomeBookmarkStoring {
 private final class FakeCodexHomeChooser {
     let result: URL?
     private(set) var callCount = 0
+    private var shouldSuspendNextCall = false
+    private var pendingCall: CheckedContinuation<URL?, Never>?
 
     init(result: URL?) {
         self.result = result
@@ -370,7 +1033,33 @@ private final class FakeCodexHomeChooser {
 
     func choose() async -> URL? {
         callCount += 1
-        return result
+        guard shouldSuspendNextCall else {
+            return result
+        }
+        shouldSuspendNextCall = false
+        return await withCheckedContinuation { continuation in
+            pendingCall = continuation
+        }
+    }
+
+    func suspendNextCall() {
+        shouldSuspendNextCall = true
+    }
+
+    func resumeNextCall() {
+        let continuation = pendingCall
+        pendingCall = nil
+        continuation?.resume(returning: result)
+    }
+
+    func waitForCallCount(_ expected: Int) async {
+        for _ in 0 ..< 2_000 {
+            if callCount >= expected, pendingCall != nil {
+                return
+            }
+            await Task.yield()
+        }
+        XCTFail("等待目录选择器打开超时")
     }
 }
 
@@ -381,6 +1070,7 @@ private final class ViewModelFixture {
     let runtimeBuilder: FakeRuntimeBuilder
     let bookmarkStore: FakeBookmarkStore
     let chooser: FakeCodexHomeChooser
+    let sleeper: ControlledSleeper
     let viewModel: UsageViewModel
 
     init(
@@ -390,7 +1080,10 @@ private final class ViewModelFixture {
             fileURLWithPath: "/tmp/fake-codex-home",
             isDirectory: true
         ),
-        chosenHome: URL? = nil
+        chosenHome: URL? = nil,
+        notificationResults: [UsageSnapshot?] = [],
+        everyNotificationEnds: Bool = false,
+        schedulerInterval: Duration = .seconds(60)
     ) {
         let outcome: FakeRefreshOutcome
         if let refreshError {
@@ -402,7 +1095,9 @@ private final class ViewModelFixture {
         }
         service = FakeUsageService(
             defaultOutcome: outcome,
-            home: resolvedHome
+            home: resolvedHome,
+            notificationResults: notificationResults,
+            everyNotificationEnds: everyNotificationEnds
         )
         watcher = FakeSessionWatcher()
         runtimeBuilder = FakeRuntimeBuilder(
@@ -411,6 +1106,7 @@ private final class ViewModelFixture {
         )
         bookmarkStore = FakeBookmarkStore()
         chooser = FakeCodexHomeChooser(result: chosenHome)
+        sleeper = ControlledSleeper()
         viewModel = UsageViewModel(
             runtimeBuilder: runtimeBuilder,
             bookmarkStore: bookmarkStore,
@@ -423,8 +1119,91 @@ private final class ViewModelFixture {
                         from: "2026-09-01T08:00:00Z"
                     )!
                 },
-                sleep: { _ in }
+                sleep: { [sleeper] duration in
+                    try await sleeper.sleep(for: duration)
+                },
+                schedulerInterval: schedulerInterval
             )
         )
+    }
+
+    func waitUntilSnapshotEquals(_ expected: UsageSnapshot) async {
+        for _ in 0 ..< 2_000 {
+            if viewModel.snapshot == expected {
+                return
+            }
+            await Task.yield()
+        }
+        XCTFail("等待快照发布超时")
+    }
+
+    func waitUntilNotificationCallCount(_ expected: Int) async {
+        for _ in 0 ..< 2_000 {
+            if await service.notificationCalls() >= expected {
+                return
+            }
+            await Task.yield()
+        }
+        XCTFail("等待通知消费启动超时")
+    }
+
+    func waitUntilStopCount(_ expected: Int) async {
+        for _ in 0 ..< 2_000 {
+            if runtimeBuilder.stopCount >= expected {
+                return
+            }
+            await Task.yield()
+        }
+        XCTFail("等待 runtime 停止超时")
+    }
+
+    func waitUntilFatalError() async {
+        for _ in 0 ..< 2_000 {
+            if viewModel.fatalErrorMessage != nil {
+                return
+            }
+            await Task.yield()
+        }
+        XCTFail("等待数据库致命错误超时")
+    }
+
+    func waitUntilSavedURLCount(_ expected: Int) async {
+        for _ in 0 ..< 2_000 {
+            if bookmarkStore.savedURLs.count >= expected {
+                return
+            }
+            await Task.yield()
+        }
+        XCTFail("等待目录授权保存超时")
+    }
+}
+
+private actor LifecycleCompletionProbe {
+    private var started = false
+    private var completed = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func markStarted() {
+        started = true
+        let waiters = startWaiters
+        startWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+    }
+
+    func markCompleted() {
+        completed = true
+    }
+
+    func waitUntilStarted() async {
+        if started {
+            return
+        }
+        await withCheckedContinuation { continuation in
+            startWaiters.append(continuation)
+        }
+    }
+
+    func isCompleted() -> Bool {
+        completed
     }
 }
