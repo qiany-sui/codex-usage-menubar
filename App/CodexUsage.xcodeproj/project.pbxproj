@@ -23,6 +23,10 @@
 		A0000000000000000000004D /* AppContainerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000003C /* AppContainerTests.swift */; };
 		A0000000000000000000004E /* UsageViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000003D /* UsageViewModelTests.swift */; };
 		A0000000000000000000004F /* UsageViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000003E /* UsageViewModel.swift */; };
+		B00000000000000000000010 /* UsagePresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000020 /* UsagePresentationTests.swift */; };
+		B00000000000000000000011 /* UsagePresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000021 /* UsagePresentation.swift */; };
+		B00000000000000000000012 /* UsagePopoverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000022 /* UsagePopoverView.swift */; };
+		B00000000000000000000013 /* OverviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000023 /* OverviewView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -53,6 +57,10 @@
 		A0000000000000000000003C /* AppContainerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppContainerTests.swift; sourceTree = "<group>"; };
 		A0000000000000000000003D /* UsageViewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageViewModelTests.swift; sourceTree = "<group>"; };
 		A0000000000000000000003E /* UsageViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageViewModel.swift; sourceTree = "<group>"; };
+		B00000000000000000000020 /* UsagePresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsagePresentationTests.swift; sourceTree = "<group>"; };
+		B00000000000000000000021 /* UsagePresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsagePresentation.swift; sourceTree = "<group>"; };
+		B00000000000000000000022 /* UsagePopoverView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsagePopoverView.swift; sourceTree = "<group>"; };
+		B00000000000000000000023 /* OverviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverviewView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -92,6 +100,9 @@
 				A0000000000000000000003A /* UsageRuntime.swift */,
 				A0000000000000000000003B /* AppContainer.swift */,
 				A0000000000000000000003E /* UsageViewModel.swift */,
+				B00000000000000000000021 /* UsagePresentation.swift */,
+				B00000000000000000000022 /* UsagePopoverView.swift */,
+				B00000000000000000000023 /* OverviewView.swift */,
 				A00000000000000000000035 /* UsageFormatters.swift */,
 				A00000000000000000000036 /* UsageTheme.swift */,
 				A00000000000000000000032 /* Assets.xcassets */,
@@ -109,6 +120,7 @@
 				A00000000000000000000038 /* CodexHomeBookmarkStoreTests.swift */,
 				A0000000000000000000003C /* AppContainerTests.swift */,
 				A0000000000000000000003D /* UsageViewModelTests.swift */,
+				B00000000000000000000020 /* UsagePresentationTests.swift */,
 			);
 			path = CodexUsageTests;
 			sourceTree = "<group>";
@@ -236,6 +248,9 @@
 				A0000000000000000000004B /* UsageRuntime.swift in Sources */,
 				A0000000000000000000004C /* AppContainer.swift in Sources */,
 				A0000000000000000000004F /* UsageViewModel.swift in Sources */,
+				B00000000000000000000011 /* UsagePresentation.swift in Sources */,
+				B00000000000000000000012 /* UsagePopoverView.swift in Sources */,
+				B00000000000000000000013 /* OverviewView.swift in Sources */,
 				A00000000000000000000046 /* UsageFormatters.swift in Sources */,
 				A00000000000000000000047 /* UsageTheme.swift in Sources */,
 			);
@@ -251,6 +266,7 @@
 				A00000000000000000000049 /* CodexHomeBookmarkStoreTests.swift in Sources */,
 				A0000000000000000000004D /* AppContainerTests.swift in Sources */,
 				A0000000000000000000004E /* UsageViewModelTests.swift in Sources */,
+				B00000000000000000000010 /* UsagePresentationTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
