@@ -1,5 +1,27 @@
+import AppKit
 import Foundation
 import UsageCore
+
+struct CodexHomePanelConfiguration: Equatable {
+    let canChooseDirectories: Bool
+    let canChooseFiles: Bool
+    let allowsMultipleSelection: Bool
+    let prompt: String
+    let message: String
+
+    static let live = CodexHomePanelConfiguration(
+        canChooseDirectories: true,
+        canChooseFiles: false,
+        allowsMultipleSelection: false,
+        prompt: "选择",
+        message: "请选择包含 sessions 或 archived_sessions 的 Codex Home 文件夹。"
+    )
+}
+
+enum AppMetadata {
+    static let applicationName = "Codex Usage"
+    static let popoverSize = UsageTheme.popoverSize
+}
 
 enum AppRuntimeError: Error, Equatable, Sendable {
     case codexExecutableNotFound
@@ -34,6 +56,27 @@ struct AppContainer: UsageRuntimeBuilding {
         applicationSupport
             .appendingPathComponent("Codex Usage", isDirectory: true)
             .appendingPathComponent("usage.sqlite")
+    }
+
+    @MainActor
+    static func chooseCodexHome() async -> URL? {
+        let configuration = CodexHomePanelConfiguration.live
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = configuration.canChooseDirectories
+        panel.canChooseFiles = configuration.canChooseFiles
+        panel.allowsMultipleSelection = configuration.allowsMultipleSelection
+        panel.canCreateDirectories = false
+        panel.prompt = configuration.prompt
+        panel.message = configuration.message
+        panel.title = "选择 Codex Home"
+
+        return await withCheckedContinuation { continuation in
+            panel.begin { response in
+                continuation.resume(
+                    returning: response == .OK ? panel.url : nil
+                )
+            }
+        }
     }
 
     func makeRuntime(codexHome: URL?) async throws -> UsageRuntime {

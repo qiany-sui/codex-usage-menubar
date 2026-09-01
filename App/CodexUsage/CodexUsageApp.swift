@@ -2,29 +2,70 @@ import AppKit
 import SwiftUI
 import UsageCore
 
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    var prepareToTerminate: (() async -> Void)?
+
+    private var isTerminating = false
+
+    func applicationShouldTerminate(
+        _ sender: NSApplication
+    ) -> NSApplication.TerminateReply {
+        guard !isTerminating else {
+            return .terminateNow
+        }
+        isTerminating = true
+
+        Task {
+            if let prepareToTerminate {
+                await prepareToTerminate()
+            }
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+}
+
 @main
 struct CodexUsageApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @StateObject private var viewModel: UsageViewModel
+
+    init() {
+        let container = AppContainer.live()
+        _viewModel = StateObject(
+            wrappedValue: UsageViewModel(
+                runtimeBuilder: container,
+                bookmarkStore: CodexHomeBookmarkStore(),
+                chooseCodexHome: AppContainer.chooseCodexHome
+            )
+        )
+    }
+
     var body: some Scene {
         MenuBarExtra {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Codex Usage")
-                    .font(.headline)
-                Text("正在准备本机用量数据…")
-                    .foregroundStyle(.secondary)
-                Divider()
-                Button("退出 Codex Usage") {
-                    NSApplication.shared.terminate(nil)
+            UsagePopoverView(viewModel: viewModel)
+                .onAppear {
+                    Task { await viewModel.openPopover() }
                 }
-            }
-            .padding(16)
-            .frame(
-                width: 410,
-                height: 440,
-                alignment: .topLeading
-            )
-            .preferredColorScheme(.dark)
         } label: {
-            Text("◔ --")
+            Text(viewModel.menuBarTitle)
+                .accessibilityLabel(
+                    "Codex 周额度 " + viewModel.menuBarTitle
+                )
+                .task {
+                    appDelegate.prepareToTerminate = {
+                        await viewModel.stop()
+                    }
+                    await viewModel.start()
+                }
+                .onReceive(
+                    NSWorkspace.shared.notificationCenter.publisher(
+                        for: NSWorkspace.didWakeNotification
+                    )
+                ) { _ in
+                    Task { await viewModel.handleWake() }
+                }
         }
         .menuBarExtraStyle(.window)
     }
