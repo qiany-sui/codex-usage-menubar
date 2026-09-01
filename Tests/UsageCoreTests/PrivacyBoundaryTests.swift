@@ -26,10 +26,12 @@ final class PrivacyBoundaryTests: XCTestCase {
         let store = try SQLiteUsageStore(databaseURL: databaseURL)
         try await store.migrate()
         let indexer = SessionUsageIndexer(store: store)
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
         let result = try await indexer.index(
             codexHome: root,
             modifiedSince: .distantPast,
-            calendar: Calendar(identifier: .gregorian)
+            calendar: calendar
         )
         let events = try await store.events(
             from: .distantPast,
@@ -37,7 +39,7 @@ final class PrivacyBoundaryTests: XCTestCase {
         )
         let snapshot = UsageReconciler().snapshot(
             now: try date("2026-08-31T12:00:00.000Z"),
-            calendar: Calendar(identifier: .gregorian),
+            calendar: calendar,
             quota: nil,
             events: events,
             officialDays: [],
