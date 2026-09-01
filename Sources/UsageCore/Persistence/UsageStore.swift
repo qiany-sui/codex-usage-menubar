@@ -54,6 +54,7 @@ public struct OfficialUsageDay: Codable, Equatable, Sendable {
 }
 
 public protocol UsageStore: Actor {
+    func close() throws
     func migrate() throws
     func insert(events: [StoredUsageEvent]) throws -> Int
     func ingest(events: [StoredUsageEvent], cursor: FileCursor) throws -> Int

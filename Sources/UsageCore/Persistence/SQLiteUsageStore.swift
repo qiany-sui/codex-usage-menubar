@@ -2,14 +2,28 @@ import Foundation
 import SQLite3
 
 public actor SQLiteUsageStore: UsageStore {
-    private let connection: SQLiteConnection
+    private var connection: SQLiteConnection?
 
     public init(databaseURL: URL) throws {
         connection = try SQLiteConnection(databaseURL: databaseURL)
     }
 
+    public func close() throws {
+        guard let connection else {
+            return
+        }
+        defer {
+            self.connection = nil
+        }
+        try connection.execute(
+            "PRAGMA wal_checkpoint(TRUNCATE);",
+            operation: "checkpoint database"
+        )
+    }
+
     public func migrate() throws {
-        try connection.transaction {
+        try requireConnection().transaction {
+            let connection = try requireConnection()
             try connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS file_cursors (
@@ -73,10 +87,11 @@ public actor SQLiteUsageStore: UsageStore {
     }
 
     public func insert(events: [StoredUsageEvent]) throws -> Int {
+        _ = try requireConnection()
         guard events.allSatisfy(isValidEvent) else {
             throw validationFailure(operation: "validate event")
         }
-        return try connection.transaction {
+        return try requireConnection().transaction {
             try insertEvents(events)
         }
     }
@@ -85,13 +100,14 @@ public actor SQLiteUsageStore: UsageStore {
         events: [StoredUsageEvent],
         cursor: FileCursor
     ) throws -> Int {
+        _ = try requireConnection()
         guard events.allSatisfy(isValidEvent) else {
             throw validationFailure(operation: "validate event")
         }
         guard isValidCursor(cursor) else {
             throw validationFailure(operation: "validate cursor")
         }
-        return try connection.transaction {
+        return try requireConnection().transaction {
             let inserted = try insertEvents(events)
             try upsertCursor(cursor)
             return inserted
@@ -99,6 +115,7 @@ public actor SQLiteUsageStore: UsageStore {
     }
 
     public func events(from: Date, to: Date) throws -> [StoredUsageEvent] {
+        let connection = try requireConnection()
         guard isFinite(from), isFinite(to) else {
             throw validationFailure(operation: "validate event query")
         }
@@ -138,6 +155,7 @@ public actor SQLiteUsageStore: UsageStore {
     }
 
     public func cursor(for pathHash: Data) throws -> FileCursor? {
+        let connection = try requireConnection()
         let statement = try connection.prepare(
             """
             SELECT device_id, inode, committed_offset, previous_input_tokens,
@@ -180,6 +198,7 @@ public actor SQLiteUsageStore: UsageStore {
     }
 
     public func save(cursor: FileCursor) throws {
+        _ = try requireConnection()
         guard isValidCursor(cursor) else {
             throw validationFailure(operation: "validate cursor")
         }
@@ -187,6 +206,7 @@ public actor SQLiteUsageStore: UsageStore {
     }
 
     private func insertEvents(_ events: [StoredUsageEvent]) throws -> Int {
+        let connection = try requireConnection()
         let statement = try connection.prepare(
             """
             INSERT OR IGNORE INTO usage_events (
@@ -214,6 +234,7 @@ public actor SQLiteUsageStore: UsageStore {
     }
 
     private func upsertCursor(_ cursor: FileCursor) throws {
+        let connection = try requireConnection()
         let statement = try connection.prepare(
             """
             INSERT INTO file_cursors (
@@ -250,10 +271,12 @@ public actor SQLiteUsageStore: UsageStore {
     }
 
     public func upsert(officialDays: [OfficialUsageDay]) throws {
+        _ = try requireConnection()
         guard officialDays.allSatisfy(isValidOfficialDay) else {
             throw validationFailure(operation: "validate official day")
         }
-        try connection.transaction {
+        try requireConnection().transaction {
+            let connection = try requireConnection()
             let statement = try connection.prepare(
                 """
                 INSERT INTO official_usage_days (local_day, tokens, fetched_at)
@@ -277,6 +300,7 @@ public actor SQLiteUsageStore: UsageStore {
     }
 
     public func officialDays() throws -> [OfficialUsageDay] {
+        let connection = try requireConnection()
         let statement = try connection.prepare(
             """
             SELECT local_day, tokens, fetched_at
@@ -303,6 +327,7 @@ public actor SQLiteUsageStore: UsageStore {
     }
 
     public func save(quota: QuotaSnapshot) throws {
+        let connection = try requireConnection()
         guard isValidQuota(quota) else {
             throw validationFailure(operation: "validate quota")
         }
@@ -333,6 +358,7 @@ public actor SQLiteUsageStore: UsageStore {
     }
 
     public func latestQuota() throws -> QuotaSnapshot? {
+        let connection = try requireConnection()
         let statement = try connection.prepare(
             """
             SELECT limit_id, used_percent, window_duration_minutes,
@@ -362,13 +388,15 @@ public actor SQLiteUsageStore: UsageStore {
     }
 
     public func replace(cycles: [QuotaCycle]) throws {
+        _ = try requireConnection()
         guard cycles.count <= 9 else {
             throw SQLiteStoreError.tooManyCycles(cycles.count)
         }
         guard cycles.allSatisfy(isValidCycle) else {
             throw validationFailure(operation: "validate cycle")
         }
-        try connection.transaction {
+        try requireConnection().transaction {
+            let connection = try requireConnection()
             try connection.execute(
                 "DELETE FROM quota_cycles;",
                 operation: "clear cycles"
@@ -403,6 +431,7 @@ public actor SQLiteUsageStore: UsageStore {
     }
 
     public func cycles() throws -> [QuotaCycle] {
+        let connection = try requireConnection()
         let statement = try connection.prepare(
             """
             SELECT starts_at, ends_at, input_tokens, cached_input_tokens,
@@ -442,10 +471,12 @@ public actor SQLiteUsageStore: UsageStore {
         eventsBefore: Date,
         officialDaysBefore: LocalDay
     ) throws {
+        _ = try requireConnection()
         guard isFinite(eventsBefore), isCanonical(officialDaysBefore) else {
             throw validationFailure(operation: "validate prune cutoff")
         }
-        try connection.transaction {
+        try requireConnection().transaction {
+            let connection = try requireConnection()
             let events = try connection.prepare(
                 "DELETE FROM usage_events WHERE occurred_at < ?;",
                 operation: "prune events"
@@ -464,6 +495,13 @@ public actor SQLiteUsageStore: UsageStore {
                 throw corruption(operation: "prune official days")
             }
         }
+    }
+
+    private func requireConnection() throws -> SQLiteConnection {
+        guard let connection else {
+            throw SQLiteStoreError.closed
+        }
+        return connection
     }
 
     private func isValidEvent(_ event: StoredUsageEvent) -> Bool {

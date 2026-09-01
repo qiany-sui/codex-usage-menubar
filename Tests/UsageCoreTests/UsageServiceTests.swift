@@ -159,6 +159,8 @@ actor ReadOnlyUsageStoreSpy: UsageStore {
         storedCycles = cycles
     }
 
+    func close() throws {}
+
     func migrate() throws { migrationCount += 1 }
 
     func insert(events: [StoredUsageEvent]) throws -> Int {
