@@ -469,6 +469,52 @@ struct ServiceFixture {
 final class UsageServiceTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_788_148_800)
 
+    func testResolvedCodexHomeIsNilBeforeInitializationWhenNoCandidateExists() async throws {
+        let initializedHome = try temporaryCodexHome()
+        let homeDirectory = try temporaryDirectory()
+        let fixture = try makeHomeResolutionService(
+            initializedHome: initializedHome,
+            environment: [:],
+            homeDirectory: homeDirectory
+        )
+
+        let resolved = await fixture.service.resolvedCodexHome()
+
+        XCTAssertNil(resolved)
+        try await fixture.store.close()
+    }
+
+    func testResolvedCodexHomeUsesExplicitEnvironmentBeforeInitialization() async throws {
+        let initializedHome = try temporaryCodexHome()
+        let environmentHome = try temporaryCodexHome()
+        let fixture = try makeHomeResolutionService(
+            initializedHome: initializedHome,
+            environment: ["CODEX_HOME": environmentHome.path],
+            homeDirectory: try temporaryDirectory()
+        )
+
+        let resolved = await fixture.service.resolvedCodexHome()
+
+        XCTAssertEqual(resolved, environmentHome.standardizedFileURL)
+        try await fixture.store.close()
+    }
+
+    func testResolvedCodexHomePrefersInitializedHomeOverEnvironment() async throws {
+        let initializedHome = try temporaryCodexHome()
+        let environmentHome = try temporaryCodexHome()
+        let fixture = try makeHomeResolutionService(
+            initializedHome: initializedHome,
+            environment: ["CODEX_HOME": environmentHome.path],
+            homeDirectory: try temporaryDirectory()
+        )
+
+        _ = try await fixture.service.refresh(reason: .startup, now: now)
+        let resolved = await fixture.service.resolvedCodexHome()
+
+        XCTAssertEqual(resolved, initializedHome.standardizedFileURL)
+        try await fixture.store.close()
+    }
+
     func testConcurrentRefreshesInitializeOnlyOnce() async throws {
         let baselineNow = now
         let codexHome = try temporaryCodexHome()
@@ -1594,6 +1640,37 @@ final class UsageServiceTests: XCTestCase {
             homeDirectory: codexHome.deletingLastPathComponent(),
             calendar: calendar
         )
+    }
+
+    private func makeHomeResolutionService(
+        initializedHome: URL,
+        environment: [String: String],
+        homeDirectory: URL
+    ) throws -> (service: UsageService, store: SQLiteUsageStore) {
+        let store = try SQLiteUsageStore(
+            databaseURL: try temporaryDatabaseURL()
+        )
+        let client = FakeAccountUsageClient(
+            initialized: InitializeResult(
+                codexHome: initializedHome.path,
+                platformFamily: "unix",
+                platformOs: "macos",
+                userAgent: "test"
+            ),
+            limits: ServiceFixture.fullLimits,
+            usage: ServiceFixture.fullUsage
+        )
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let service = UsageService(
+            accountClient: client,
+            indexer: CountingSessionIndexer(),
+            store: store,
+            environment: environment,
+            homeDirectory: homeDirectory,
+            calendar: calendar
+        )
+        return (service, store)
     }
 
     private func rateLimitUpdate(

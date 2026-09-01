@@ -318,6 +318,14 @@ public actor UsageService {
         return try await buildSnapshot(now: now, updateCycles: false)
     }
 
+    public func resolvedCodexHome() -> URL? {
+        homeResolver.resolve(
+            initializedHome: initializedHome,
+            environment: environment,
+            homeDirectory: homeDirectory
+        )
+    }
+
     public func currentSnapshot(now: Date) async throws -> UsageSnapshot {
         await acquireOperation()
         defer { releaseOperation() }
