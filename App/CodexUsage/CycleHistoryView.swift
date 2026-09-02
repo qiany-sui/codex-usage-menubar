@@ -20,6 +20,7 @@ struct CycleHistoryView: View {
                             }
                         }
                     }
+                    .padding(.trailing, 12)
                 }
             }
         }
@@ -49,12 +50,8 @@ struct CycleHistoryView: View {
     }
 
     private func cycleRow(_ entry: CycleEntryPresentation) -> some View {
-        HStack(spacing: 10) {
-            RoundedRectangle(cornerRadius: 2)
-                .fill(entry.isCurrent ? UsageTheme.accent : Color.clear)
-                .frame(width: 3, height: 34)
-
-            VStack(alignment: .leading, spacing: 4) {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(entry.range)
                         .font(.system(size: 12, weight: .medium))
@@ -75,16 +72,27 @@ struct CycleHistoryView: View {
                 .foregroundStyle(UsageTheme.secondaryText)
             }
 
-            Spacer()
+            Spacer(minLength: 12)
 
             Text(entry.formattedTokens)
                 .font(.system(size: 15, weight: .semibold))
                 .monospacedDigit()
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
         }
-        .padding(.horizontal, 7)
-        .frame(height: 50)
+        .padding(.leading, 20)
+        .padding(.trailing, 7)
+        .frame(height: 46)
         .background(entry.isCurrent ? UsageTheme.surface : Color.clear)
         .clipShape(RoundedRectangle(cornerRadius: 7))
+        .overlay(alignment: .leading) {
+            if entry.isCurrent {
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(UsageTheme.accent)
+                    .frame(width: 3, height: 34)
+                    .padding(.leading, 7)
+            }
+        }
     }
 
     private var emptyState: some View {

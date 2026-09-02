@@ -3,7 +3,6 @@ import SwiftUI
 import UsageCore
 
 struct UsagePopoverView: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var viewModel: UsageViewModel
 
     private let now: () -> Date
@@ -25,8 +24,7 @@ struct UsagePopoverView: View {
                 width: UsageTheme.popoverSize.width,
                 height: UsageTheme.popoverSize.height
             )
-            .background(UsageTheme.background)
-            .preferredColorScheme(.dark)
+            .background(.regularMaterial)
     }
 
     @ViewBuilder
@@ -90,23 +88,6 @@ struct UsagePopoverView: View {
                 )
             }
         }
-        .id(viewModel.page)
-        .transition(pageTransition)
-        .animation(
-            reduceMotion
-                ? nil
-                : .easeInOut(duration: UsageTheme.transitionDuration),
-            value: viewModel.page
-        )
-    }
-
-    private var pageTransition: AnyTransition {
-        reduceMotion
-            ? .identity
-            : .asymmetric(
-                insertion: .move(edge: .trailing).combined(with: .opacity),
-                removal: .move(edge: .leading).combined(with: .opacity)
-            )
     }
 }
 
@@ -129,7 +110,7 @@ private struct CodexHomeSelectionState: View {
         VStack(spacing: 18) {
             Image(systemName: "folder.badge.questionmark")
                 .font(.system(size: 34, weight: .light))
-                .foregroundStyle(UsageTheme.accentBlue)
+                .foregroundStyle(UsageTheme.accent)
             VStack(spacing: 6) {
                 Text("需要访问 Codex Home")
                     .font(.system(size: 16, weight: .semibold))

@@ -16,7 +16,7 @@ v1 已包含完整的菜单栏 App、`UsageCore`、SQLite 持久化、会话增�
 
 1. 双击 `App/CodexUsage.xcodeproj`，不要打开根目录的 `Package.swift`。
 2. 在 Xcode 顶部将 Scheme 选择为 `CodexUsage`，运行目标选择 `My Mac`。
-3. 按 `⌘R`。出现 `Build Succeeded` 后，到 macOS 菜单栏寻找 `◔ --` 或额度百分比。
+3. 按 `⌘R`。出现 `Build Succeeded` 后，到 macOS 菜单栏寻找饼图图标和额度百分比。
 4. 点击菜单栏项目查看概览；应用没有 Dock 图标属于正常行为。
 5. 停止调试时，点击 Xcode 左上角的停止按钮或按 `⌘.`。正常退出应用时，请在弹窗底部点击“退出”。
 

@@ -30,8 +30,48 @@ final class ProjectSmokeTests: XCTestCase {
     func testAppMetadataMatchesMenuBarDelivery() {
         XCTAssertEqual(
             AppMetadata.popoverSize,
-            CGSize(width: 410, height: 440)
+            CGSize(width: 380, height: 440)
         )
         XCTAssertEqual(AppMetadata.applicationName, "Codex Usage")
     }
+
+    func testPopoverUsesNativeMaterialWithoutForcingDarkAppearance() throws {
+        let source = try appSource(named: "UsagePopoverView.swift")
+
+        XCTAssertTrue(source.contains(".background(.regularMaterial)"))
+        XCTAssertFalse(source.contains(".preferredColorScheme(.dark)"))
+    }
+
+    func testUsageThemeUsesSystemSemanticColors() throws {
+        let source = try appSource(named: "UsageTheme.swift")
+
+        XCTAssertTrue(source.contains("Color(nsColor: .windowBackgroundColor)"))
+        XCTAssertTrue(source.contains("Color(nsColor: .controlBackgroundColor)"))
+        XCTAssertTrue(source.contains("Color(nsColor: .separatorColor)"))
+        XCTAssertTrue(source.contains("Color(nsColor: .labelColor)"))
+        XCTAssertTrue(source.contains("Color(nsColor: .secondaryLabelColor)"))
+        XCTAssertTrue(source.contains("Color(nsColor: .controlAccentColor)"))
+        XCTAssertFalse(source.contains("Color(red:"))
+    }
+
+    func testOverviewAndTrendDoNotUseCustomAccentGradients() throws {
+        let overviewSource = try appSource(named: "OverviewView.swift")
+        let trendSource = try appSource(named: "TrendDetailView.swift")
+
+        XCTAssertFalse(overviewSource.contains("LinearGradient("))
+        XCTAssertFalse(trendSource.contains("LinearGradient("))
+    }
+
+    private func appSource(named fileName: String) throws -> String {
+        let appDirectory = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("CodexUsage", isDirectory: true)
+
+        return try String(
+            contentsOf: appDirectory.appendingPathComponent(fileName),
+            encoding: .utf8
+        )
+    }
+
 }

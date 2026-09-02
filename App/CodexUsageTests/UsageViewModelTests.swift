@@ -41,7 +41,7 @@ final class UsageViewModelTests: XCTestCase {
         XCTAssertFalse(fixture.viewModel.isInitialLoading)
         XCTAssertFalse(fixture.viewModel.needsCodexHomeSelection)
         XCTAssertNil(fixture.viewModel.fatalErrorMessage)
-        XCTAssertEqual(fixture.viewModel.menuBarTitle, "◔ 62%")
+        XCTAssertEqual(fixture.viewModel.menuBarTitle, "62%")
         let reasons = await fixture.service.reasons()
         XCTAssertEqual(reasons, [.startup])
         await fixture.viewModel.stop()
@@ -70,7 +70,7 @@ final class UsageViewModelTests: XCTestCase {
         await fixture.viewModel.start()
 
         XCTAssertNil(fixture.viewModel.snapshot)
-        XCTAssertEqual(fixture.viewModel.menuBarTitle, "◔ !")
+        XCTAssertEqual(fixture.viewModel.menuBarTitle, "!")
         XCTAssertEqual(
             fixture.viewModel.fatalErrorMessage,
             "本地用量数据库无法使用。请重试；应用不会自动删除现有数据。"
@@ -142,7 +142,7 @@ final class UsageViewModelTests: XCTestCase {
 
         XCTAssertNil(fixture.viewModel.snapshot)
         XCTAssertNil(fixture.viewModel.fatalErrorMessage)
-        XCTAssertEqual(fixture.viewModel.menuBarTitle, "◔ --")
+        XCTAssertEqual(fixture.viewModel.menuBarTitle, "--")
         XCTAssertFalse(fixture.viewModel.isInitialLoading)
         await fixture.viewModel.stop()
     }
@@ -190,7 +190,7 @@ final class UsageViewModelTests: XCTestCase {
         await olderTask.value
 
         XCTAssertEqual(fixture.viewModel.snapshot, newer)
-        XCTAssertEqual(fixture.viewModel.menuBarTitle, "◔ 45%")
+        XCTAssertEqual(fixture.viewModel.menuBarTitle, "45%")
         await fixture.viewModel.stop()
     }
 
@@ -230,7 +230,7 @@ final class UsageViewModelTests: XCTestCase {
         await fixture.viewModel.start()
         await fixture.waitUntilSnapshotEquals(updated)
 
-        XCTAssertEqual(fixture.viewModel.menuBarTitle, "◔ 48%")
+        XCTAssertEqual(fixture.viewModel.menuBarTitle, "48%")
         await fixture.viewModel.stop()
     }
 
@@ -251,7 +251,7 @@ final class UsageViewModelTests: XCTestCase {
         await fixture.service.enqueueNotification(notification)
         await fixture.waitUntilSnapshotEquals(notification)
 
-        XCTAssertEqual(fixture.viewModel.menuBarTitle, "◔ 48%")
+        XCTAssertEqual(fixture.viewModel.menuBarTitle, "48%")
         await fixture.viewModel.stop()
     }
 

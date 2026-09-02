@@ -17,34 +17,29 @@ enum UsageFormatters {
         isFatal: Bool
     ) -> String {
         guard !isFatal else {
-            return "◔ !"
+            return "!"
         }
 
-        return "◔ \(self.remainingPercent(remainingPercent))"
+        return self.remainingPercent(remainingPercent)
     }
 
     static func tokens(_ value: Int64) -> String {
         let magnitude = abs(Double(value))
-        guard magnitude >= 1_000 else {
+        guard magnitude >= 10_000 else {
             return String(value)
         }
 
-        let divisor = magnitude < 1_000_000 ? 1_000.0 : 1_000_000.0
-        let suffix = magnitude < 1_000_000 ? "K" : "M"
+        let usesHundredMillions = magnitude >= 100_000_000
+        let divisor = usesHundredMillions ? 100_000_000.0 : 10_000.0
+        let suffix = usesHundredMillions ? "亿" : "万"
         let scaled = Double(value) / divisor
-        let digits = abs(scaled) < 10 ? 1 : 0
-        let roundingFactor = digits == 1 ? 10.0 : 1.0
-        let rounded = (scaled * roundingFactor)
-            .rounded(.toNearestOrAwayFromZero) / roundingFactor
-        var number = String(
-            format: "%.*f",
+        let rounded = (scaled * 10)
+            .rounded(.toNearestOrAwayFromZero) / 10
+        let number = String(
+            format: "%.1f",
             locale: Locale(identifier: "en_US_POSIX"),
-            digits,
             rounded
         )
-        if number.hasSuffix(".0") {
-            number.removeLast(2)
-        }
         return number + suffix
     }
 

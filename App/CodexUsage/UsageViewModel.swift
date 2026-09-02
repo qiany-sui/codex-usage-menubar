@@ -38,7 +38,11 @@ final class UsageViewModel: ObservableObject {
     }
 
     var menuBarTitle: String {
-        UsageFormatters.menuBarTitle(
+        menuBarPresentation.title
+    }
+
+    var menuBarPresentation: MenuBarPresentation {
+        MenuBarPresentation(
             remainingPercent: snapshot?.quota?.remainingPercent,
             isFatal: fatalErrorMessage != nil
         )

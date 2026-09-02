@@ -14,35 +14,38 @@ final class UsageFormattersTests: XCTestCase {
         XCTAssertEqual(UsageFormatters.remainingPercent(120), "100%")
     }
 
-    func testMenuBarTitleUsesDataEmptyAndFatalStates() {
+    func testMenuBarTitleKeepsStatusIconSeparateFromText() {
         XCTAssertEqual(
             UsageFormatters.menuBarTitle(
                 remainingPercent: 62.4,
                 isFatal: false
             ),
-            "◔ 62%"
+            "62%"
         )
         XCTAssertEqual(
             UsageFormatters.menuBarTitle(
                 remainingPercent: nil,
                 isFatal: false
             ),
-            "◔ --"
+            "--"
         )
         XCTAssertEqual(
             UsageFormatters.menuBarTitle(
                 remainingPercent: 62,
                 isFatal: true
             ),
-            "◔ !"
+            "!"
         )
     }
 
-    func testTokensUseCompactStableUnits() {
+    func testTokensUseChineseCompactUnitsAcrossThresholds() {
         XCTAssertEqual(UsageFormatters.tokens(999), "999")
-        XCTAssertEqual(UsageFormatters.tokens(1_200), "1.2K")
-        XCTAssertEqual(UsageFormatters.tokens(12_000), "12K")
-        XCTAssertEqual(UsageFormatters.tokens(1_250_000), "1.3M")
+        XCTAssertEqual(UsageFormatters.tokens(1_200), "1200")
+        XCTAssertEqual(UsageFormatters.tokens(12_000), "1.2万")
+        XCTAssertEqual(UsageFormatters.tokens(377_000), "37.7万")
+        XCTAssertEqual(UsageFormatters.tokens(82_000_000), "8200.0万")
+        XCTAssertEqual(UsageFormatters.tokens(115_000_000), "1.2亿")
+        XCTAssertEqual(UsageFormatters.tokens(684_928_819), "6.8亿")
     }
 
     func testResetCountdownUsesChineseBoundaries() throws {

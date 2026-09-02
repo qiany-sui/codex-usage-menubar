@@ -94,13 +94,9 @@ struct OverviewView: View {
                 .help("刷新")
             }
 
-            LinearGradient(
-                colors: [UsageTheme.accent, UsageTheme.accentBlue],
-                startPoint: .leading,
-                endPoint: .trailing
-            )
-            .frame(height: 1)
-            .opacity(0.85)
+            Rectangle()
+                .fill(UsageTheme.border)
+                .frame(height: 1)
         }
     }
 
@@ -142,16 +138,7 @@ struct OverviewView: View {
                 ZStack(alignment: .leading) {
                     Capsule().fill(UsageTheme.border)
                     Capsule()
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    UsageTheme.accent,
-                                    UsageTheme.accentBlue
-                                ],
-                                startPoint: .leading,
-                                endPoint: .trailing
-                            )
-                        )
+                        .fill(UsageTheme.accent)
                         .frame(
                             width: geometry.size.width
                                 * presentation.progress
@@ -175,18 +162,35 @@ struct OverviewView: View {
                 .monospacedDigit()
 
             HStack(spacing: 0) {
-                tokenDetail("输入", value: presentation.inputTokens)
+                tokenDetail(
+                    "输入",
+                    value: presentation.inputTokens,
+                    horizontalAlignment: .leading,
+                    frameAlignment: .leading
+                )
                 tokenDetail(
                     "缓存输入",
-                    value: presentation.cachedInputTokens
+                    value: presentation.cachedInputTokens,
+                    horizontalAlignment: .center,
+                    frameAlignment: .center
                 )
-                tokenDetail("输出", value: presentation.outputTokens)
+                tokenDetail(
+                    "输出",
+                    value: presentation.outputTokens,
+                    horizontalAlignment: .trailing,
+                    frameAlignment: .trailing
+                )
             }
         }
     }
 
-    private func tokenDetail(_ label: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
+    private func tokenDetail(
+        _ label: String,
+        value: String,
+        horizontalAlignment: HorizontalAlignment,
+        frameAlignment: Alignment
+    ) -> some View {
+        VStack(alignment: horizontalAlignment, spacing: 2) {
             Text(label)
             Text(value)
                 .monospacedDigit()
@@ -194,7 +198,7 @@ struct OverviewView: View {
         }
         .font(.system(size: 12))
         .foregroundStyle(UsageTheme.secondaryText)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: frameAlignment)
     }
 
     private var cycleSection: some View {
@@ -224,14 +228,14 @@ struct OverviewView: View {
 
     private var navigationRow: some View {
         HStack(spacing: 0) {
-            navigationButton(
+            NavigationTileButton(
                 title: "最近 7 天",
                 action: onShowTrend
             )
             Divider()
                 .overlay(UsageTheme.border)
                 .frame(height: 18)
-            navigationButton(
+            NavigationTileButton(
                 title: "历史周期",
                 action: onShowHistory
             )
@@ -239,26 +243,6 @@ struct OverviewView: View {
         .frame(height: 34)
         .background(UsageTheme.surface)
         .clipShape(RoundedRectangle(cornerRadius: 8))
-    }
-
-    private func navigationButton(
-        title: String,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            HStack(spacing: 5) {
-                Text(title)
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(UsageTheme.secondaryText)
-            }
-            .font(.system(size: 11, weight: .medium))
-            .padding(.horizontal, 10)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(title)
     }
 
     private var footer: some View {
@@ -273,6 +257,46 @@ struct OverviewView: View {
                 .foregroundStyle(UsageTheme.secondaryText)
                 .accessibilityLabel("退出 Codex Usage")
         }
+    }
+}
+
+private struct NavigationTileButton: View {
+    let title: String
+    let action: () -> Void
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Text(title)
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(UsageTheme.secondaryText)
+            }
+            .font(.system(size: 11, weight: .medium))
+            .padding(.horizontal, 10)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(NavigationTileButtonStyle(isHovering: isHovering))
+        .foregroundStyle(UsageTheme.primaryText)
+        .onHover { isHovering = $0 }
+        .accessibilityLabel(title)
+    }
+}
+
+private struct NavigationTileButtonStyle: ButtonStyle {
+    let isHovering: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background(
+                UsageTheme.primaryText.opacity(
+                    configuration.isPressed ? 0.10 : isHovering ? 0.05 : 0
+                )
+            )
     }
 }
 

@@ -1,6 +1,34 @@
 import Foundation
 import UsageCore
 
+enum MenuBarIconPresentation: Equatable {
+    case quota(progress: Double?)
+    case fatal
+}
+
+struct MenuBarPresentation: Equatable {
+    let icon: MenuBarIconPresentation
+    let title: String
+    let accessibilityLabel: String
+
+    init(remainingPercent: Double?, isFatal: Bool) {
+        if isFatal {
+            icon = .fatal
+        } else {
+            icon = .quota(
+                progress: remainingPercent.map {
+                    min(max($0 / 100, 0), 1)
+                }
+            )
+        }
+        title = UsageFormatters.menuBarTitle(
+            remainingPercent: remainingPercent,
+            isFatal: isFatal
+        )
+        accessibilityLabel = "Codex 周额度 \(title)"
+    }
+}
+
 struct UsageSegment: Equatable, Identifiable {
     let id: String
     let label: String

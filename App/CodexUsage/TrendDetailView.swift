@@ -69,13 +69,7 @@ struct TrendDetailView: View {
                 x: .value("日期", day.label),
                 y: .value("Token", day.tokens)
             )
-            .foregroundStyle(
-                LinearGradient(
-                    colors: [UsageTheme.accent, UsageTheme.accentBlue],
-                    startPoint: .bottom,
-                    endPoint: .top
-                )
-            )
+            .foregroundStyle(UsageTheme.accent)
             .cornerRadius(3)
         }
         .chartYAxis(.hidden)
@@ -108,17 +102,22 @@ struct TrendDetailView: View {
         } else {
             VStack(spacing: 0) {
                 ForEach(presentation.days) { day in
-                    HStack(spacing: 8) {
-                        Text(day.label)
-                            .frame(width: 36, alignment: .leading)
-                        Text(day.formattedTokens)
-                            .monospacedDigit()
-                        Spacer()
+                    HStack(spacing: 0) {
+                        HStack(spacing: 8) {
+                            Text(day.label)
+                                .frame(width: 36, alignment: .leading)
+                            Text(day.formattedTokens)
+                                .monospacedDigit()
+                        }
+                        .font(.system(size: 11.5, weight: .medium))
+                        Spacer(minLength: 12)
                         Text(day.statusLabel)
+                            .font(.system(size: 11.5))
+                            .lineLimit(1)
                             .foregroundStyle(statusColor(day.status))
                     }
-                    .font(.system(size: 10))
-                    .frame(height: 20)
+                    .padding(.horizontal, 4)
+                    .frame(height: 21)
 
                     if day.id != presentation.days.last?.id {
                         Divider().overlay(UsageTheme.border)
@@ -131,7 +130,7 @@ struct TrendDetailView: View {
     private func statusColor(_ status: UsageCalibrationStatus) -> Color {
         switch status {
         case .localLive:
-            UsageTheme.accentBlue
+            UsageTheme.accent
         case .calibrated:
             UsageTheme.secondaryText
         case .partiallyCalibrated, .stale:
