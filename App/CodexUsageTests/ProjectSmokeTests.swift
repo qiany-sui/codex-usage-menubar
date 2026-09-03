@@ -35,6 +35,39 @@ final class ProjectSmokeTests: XCTestCase {
         XCTAssertEqual(AppMetadata.applicationName, "Codex Usage")
     }
 
+    func testAppBundlesCompanionLaunchAgentAndExecutable() throws {
+        let contentsURL = Bundle.main.bundleURL
+            .appendingPathComponent("Contents", isDirectory: true)
+        let executableURL = contentsURL
+            .appendingPathComponent("MacOS", isDirectory: true)
+            .appendingPathComponent("CodexUsageWatcher")
+        let plistURL = contentsURL
+            .appendingPathComponent("Library/LaunchAgents", isDirectory: true)
+            .appendingPathComponent("com.local.CodexUsage.Watcher.plist")
+
+        XCTAssertTrue(
+            FileManager.default.isExecutableFile(atPath: executableURL.path),
+            "辅助程序必须作为可执行文件嵌入 App"
+        )
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: plistURL.path),
+            "LaunchAgent plist 必须嵌入 App"
+        )
+
+        let data = try Data(contentsOf: plistURL)
+        let object = try PropertyListSerialization.propertyList(
+            from: data,
+            format: nil
+        )
+        let plist = try XCTUnwrap(object as? [String: Any])
+
+        XCTAssertEqual(plist["Label"] as? String, "com.local.CodexUsage.Watcher")
+        XCTAssertEqual(
+            plist["BundleProgram"] as? String,
+            "Contents/MacOS/CodexUsageWatcher"
+        )
+    }
+
     func testPopoverUsesNativeMaterialWithoutForcingDarkAppearance() throws {
         let source = try appSource(named: "UsagePopoverView.swift")
 

@@ -8,6 +8,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var isTerminating = false
 
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        CompanionServiceRegistration.registerIfNeeded()
+    }
+
     func applicationShouldTerminate(
         _ sender: NSApplication
     ) -> NSApplication.TerminateReply {

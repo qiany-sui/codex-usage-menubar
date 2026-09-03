@@ -4,6 +4,8 @@ Codex Usage Menubar 是一个仅在本机运行的 macOS 菜单栏应用，用�
 
 v1 已包含完整的菜单栏 App、`UsageCore`、SQLite 持久化、会话增量索引、官方用量读取、周期校准、自动刷新和安全退出清理。
 
+应用还包含一个轻量后台辅助程序：Codex 桌面应用启动时自动启动 Codex Usage，Codex 真正退出后自动退出 Codex Usage。
+
 ## 环境要求
 
 - Apple Silicon Mac；当前产物仅包含 `arm64`
@@ -19,6 +21,21 @@ v1 已包含完整的菜单栏 App、`UsageCore`、SQLite 持久化、会话增�
 3. 按 `⌘R`。出现 `Build Succeeded` 后，到 macOS 菜单栏寻找饼图图标和额度百分比。
 4. 点击菜单栏项目查看概览；应用没有 Dock 图标属于正常行为。
 5. 停止调试时，点击 Xcode 左上角的停止按钮或按 `⌘.`。正常退出应用时，请在弹窗底部点击“退出”。
+
+## 跟随 Codex 自动启停
+
+把构建产物放进“应用程序”后，需要手动启动一次 Codex Usage。应用会注册内嵌的后台辅助程序；macOS 首次使用时可能要求在“系统设置 → 通用 → 登录项”中允许它后台运行。
+
+后续替换为新版本并重新启动 Codex Usage 时，应用会在助手发生变化后自动刷新后台注册，不需要手动删除旧登录项。
+
+启用后的行为：
+
+- Codex 启动时，自动启动 Codex Usage；
+- Codex 使用 `⌘Q`、菜单“退出”、强制退出或崩溃后，自动退出 Codex Usage；
+- 只关闭 Codex 窗口、但 Codex 进程仍在运行时，Codex Usage 保持运行；
+- Codex 运行期间手动退出 Codex Usage 后，不会立刻强制重新启动，等下次启动 Codex 时再自动打开。
+
+后台辅助程序只通过 macOS 查询运行中应用的 bundle identifier，不读取 Codex 的窗口、任务、对话或文件内容。
 
 首次启动时，应用会依次尝试使用 Codex 返回的目录、`CODEX_HOME` 和 `~/.codex`。如果仍找不到，会提示选择 Codex Home；请选择内部包含 `sessions` 或 `archived_sessions` 的文件夹。取消后可在选择页重新点击“选择 Codex Home”；已有数据但授权失效时，可点击标题区域的“重新选择”。
 
@@ -89,6 +106,7 @@ App Sandbox 当前关闭，因为应用需要读取用户选择的 Codex Home、
 
 ```text
 App/CodexUsage/          # macOS 菜单栏应用
+App/CodexUsageWatcher/   # 跟随 Codex 启停的 LaunchAgent 辅助程序
 App/CodexUsageTests/     # App 状态、格式化和工程测试
 Sources/UsageCore/
 ├── AppServer/           # app-server JSON-RPC 只读客户端
