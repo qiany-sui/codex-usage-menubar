@@ -28,6 +28,8 @@ v1 已包含完整的菜单栏 App、`UsageCore`、SQLite 持久化、会话增�
 
 后续替换为新版本并重新启动 Codex Usage 时，应用会在助手发生变化后自动刷新后台注册，不需要手动删除旧登录项。
 
+替换应用时，不要把旧版本改名后继续留在 `/Applications` 或 `~/Applications`。即使目录名变成 `Codex Usage.app.backup-*`，macOS 仍可能按包内相同的 bundle identifier 将它收录为另一个启动台项目。需要保留旧版本时，请先移到“废纸篓”或 Applications 目录之外，再复制并启动新版本。
+
 启用后的行为：
 
 - Codex 启动时，自动启动 Codex Usage；

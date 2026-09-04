@@ -16,6 +16,9 @@ public struct UsageReconciler: Sendable {
         let todayDay = localDay(for: todayStart, calendar: calendar)
         let localUsageByDay = aggregateEventsByStoredDay(events)
         let officialByDay = latestOfficialDays(officialDays)
+        let officialRange = officialByDay.keys.min().flatMap { firstDay in
+            officialByDay.keys.max().map { firstDay...$0 }
+        }
 
         let recentDays = (-6...0).compactMap { offset -> UsageDay? in
             guard let dayDate = calendar.date(
@@ -28,12 +31,15 @@ public struct UsageReconciler: Sendable {
             let day = localDay(for: dayDate, calendar: calendar)
             let localUsage = localUsageByDay[day] ?? .zero
             let official = officialByDay[day]
-            if day < todayDay, let official {
+            let isOfficiallyCovered = official != nil
+                || officialRange?.contains(day) == true
+            if day < todayDay, isOfficiallyCovered {
+                let officialTokens = official?.tokens ?? 0
                 return UsageDay(
                     day: day,
                     localUsage: localUsage,
-                    officialTokens: official.tokens,
-                    displayedTokens: official.tokens,
+                    officialTokens: officialTokens,
+                    displayedTokens: officialTokens,
                     status: .calibrated
                 )
             }

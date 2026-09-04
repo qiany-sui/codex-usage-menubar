@@ -55,6 +55,74 @@ final class UsageReconcilerTests: XCTestCase {
         XCTAssertEqual(snapshot.status, .unavailable)
     }
 
+    func testMissingDaysInsideOfficialRangeAreCalibratedAsZero() throws {
+        let calendar = shanghaiCalendar()
+        let now = try date("2026-09-03T12:00:00+08:00")
+        let official = [
+            OfficialUsageDay(
+                day: LocalDay(year: 2026, month: 8, day: 28),
+                tokens: 100,
+                fetchedAt: now
+            ),
+            OfficialUsageDay(
+                day: LocalDay(year: 2026, month: 8, day: 31),
+                tokens: 200,
+                fetchedAt: now
+            )
+        ]
+        let events = [
+            event(
+                at: try date("2026-08-29T10:00:00+08:00"),
+                day: LocalDay(year: 2026, month: 8, day: 29),
+                input: 10,
+                output: 2
+            ),
+            event(
+                at: try date("2026-08-30T10:00:00+08:00"),
+                day: LocalDay(year: 2026, month: 8, day: 30),
+                input: 20,
+                output: 3
+            ),
+            event(
+                at: try date("2026-09-01T10:00:00+08:00"),
+                day: LocalDay(year: 2026, month: 9, day: 1),
+                input: 30,
+                output: 4
+            )
+        ]
+
+        let snapshot = UsageReconciler().snapshot(
+            now: now,
+            calendar: calendar,
+            quota: nil,
+            events: events,
+            officialDays: official,
+            cycles: [],
+            lastUpdatedAt: now
+        )
+
+        XCTAssertEqual(
+            snapshot.recentDays.map(\.displayedTokens),
+            [100, 0, 0, 200, 34, 0, 0]
+        )
+        XCTAssertEqual(
+            snapshot.recentDays.map(\.officialTokens),
+            [100, 0, 0, 200, nil, nil, nil]
+        )
+        XCTAssertEqual(
+            snapshot.recentDays.map(\.status),
+            [
+                .calibrated,
+                .calibrated,
+                .calibrated,
+                .calibrated,
+                .localLive,
+                .localLive,
+                .localLive
+            ]
+        )
+    }
+
     func testDailyAggregationUsesStoredLocalDayInsteadOfTimestampDay() throws {
         let calendar = shanghaiCalendar()
         let now = try date("2026-08-31T12:00:00+08:00")

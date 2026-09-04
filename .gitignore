@@ -6,3 +6,7 @@ DerivedData/
 xcuserdata/
 *.xcworkspace/xcuserdata/
 .DS_Store
+
+.idea/
+.superpowers/
+docs/superpowers/
