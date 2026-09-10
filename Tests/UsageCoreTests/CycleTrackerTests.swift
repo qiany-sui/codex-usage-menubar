@@ -116,6 +116,70 @@ final class CycleTrackerTests: XCTestCase {
         XCTAssertEqual(cycles.last?.usage, event.usage)
     }
 
+    func testResetTimeDriftWithinOneMinuteDoesNotSplitCurrentCycle() {
+        let start = Date(timeIntervalSince1970: 1_000_000)
+        let end = start.addingTimeInterval(10_080 * 60)
+        let event = storedEvent(
+            at: start.addingTimeInterval(10),
+            input: 7,
+            output: 5
+        )
+
+        for drift: TimeInterval in [-36, 36, 60] {
+            let cycles = CycleTracker().update(
+                existing: [cycle(startsAt: start, endsAt: end)],
+                quota: quota(
+                    startsAt: start.addingTimeInterval(drift),
+                    endsAt: end.addingTimeInterval(drift)
+                ),
+                events: [event]
+            )
+
+            let observed = cycles.filter { !$0.boundaryIsEstimated }
+            XCTAssertEqual(observed.count, 1, "drift: \(drift)")
+            XCTAssertEqual(observed.last?.startsAt, start)
+            XCTAssertEqual(observed.last?.endsAt, end.addingTimeInterval(drift))
+            XCTAssertEqual(observed.last?.displayedTokens, 12)
+        }
+    }
+
+    func testRepairsStored36SecondCycleWithoutLosingUsageOrMergingRealReset() throws {
+        let previousStart = try date("2026-09-07T10:29:40+08:00")
+        let start = try date("2026-09-08T10:31:40+08:00")
+        let correctedStart = try date("2026-09-08T10:32:16+08:00")
+        let end = try date("2026-09-15T10:32:16+08:00")
+        let existing = [
+            cycle(startsAt: previousStart, endsAt: start),
+            cycle(startsAt: start, endsAt: correctedStart),
+            cycle(startsAt: correctedStart, endsAt: end)
+        ]
+        let events = [
+            storedEvent(at: start.addingTimeInterval(-1), input: 100, output: 20),
+            storedEvent(at: start.addingTimeInterval(10), input: 7, output: 5),
+            storedEvent(at: correctedStart, input: 11, output: 3)
+        ]
+        let quota = quota(startsAt: correctedStart, endsAt: end)
+
+        for stored in [existing, Array(existing.reversed())] {
+            let cycles = CycleTracker().update(
+                existing: stored,
+                quota: quota,
+                events: events
+            )
+
+            let observed = cycles.filter { !$0.boundaryIsEstimated }
+            XCTAssertEqual(observed.map(\.startsAt), [previousStart, start])
+            XCTAssertEqual(observed.map(\.endsAt), [start, end])
+            XCTAssertEqual(observed.map(\.displayedTokens), [120, 26])
+            XCTAssertEqual(cycles.count, 9)
+            XCTAssertEqual(
+                CycleTracker().update(existing: cycles, quota: quota, events: events),
+                cycles,
+                "refreshing the repaired history must not create another fragment"
+            )
+        }
+    }
+
     func testOlderDerivedStartDoesNotMoveCurrentCycleBackward() {
         let start = Date(timeIntervalSince1970: 1_000_000)
         let current = cycle(

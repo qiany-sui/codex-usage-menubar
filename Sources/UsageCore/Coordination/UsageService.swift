@@ -425,11 +425,19 @@ public actor UsageService {
         )
         let officialDays = try await store.officialDays()
 
+        var quotaHistory: [QuotaSnapshot] = []
+        if let quota {
+            quotaHistory = try await store.quotaHistory(
+                from: eventStart, to: now, limitID: quota.limitID
+            )
+        }
+
         if updateCycles, let quota {
             cycles = cycleTracker.update(
                 existing: cycles,
                 quota: quota,
-                events: events
+                events: events,
+                quotaHistory: quotaHistory
             )
             try await store.replace(cycles: cycles)
             if cycles.count == 9, let earliest = cycles.first {
@@ -452,7 +460,8 @@ public actor UsageService {
                 quota: quota,
                 events: events,
                 officialDays: officialDays
-            )
+            ),
+            quotaHistory: quotaHistory
         )
         let refreshState = try await store.refreshState()
         let finalSnapshot = refreshState.failedSources.isEmpty

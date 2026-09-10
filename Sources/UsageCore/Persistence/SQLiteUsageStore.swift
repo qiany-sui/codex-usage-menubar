@@ -383,6 +383,42 @@ public actor SQLiteUsageStore: UsageStore {
             """,
             operation: "read quota"
         )
+        return try readQuota(from: statement)
+    }
+
+    public func quotaHistory(
+        from: Date,
+        to: Date,
+        limitID: String
+    ) throws -> [QuotaSnapshot] {
+        // 连同区间前最后一条读取，才能识别跨零点但额度未变化的空档。
+        let statement = try requireConnection().prepare(
+            """
+            SELECT limit_id, used_percent, window_duration_minutes,
+                   starts_at, resets_at, fetched_at
+            FROM quota_snapshots
+            WHERE limit_id = ? AND fetched_at <= ?
+              AND (fetched_at >= ? OR fetched_at = (
+                SELECT MAX(fetched_at) FROM quota_snapshots
+                WHERE limit_id = ? AND fetched_at < ?
+              ))
+            ORDER BY fetched_at ASC;
+            """,
+            operation: "read quota history"
+        )
+        try statement.bind(limitID, at: 1)
+        try statement.bind(to.timeIntervalSince1970, at: 2)
+        try statement.bind(from.timeIntervalSince1970, at: 3)
+        try statement.bind(limitID, at: 4)
+        try statement.bind(from.timeIntervalSince1970, at: 5)
+        var result: [QuotaSnapshot] = []
+        while let quota = try readQuota(from: statement) {
+            result.append(quota)
+        }
+        return result
+    }
+
+    private func readQuota(from statement: SQLiteStatement) throws -> QuotaSnapshot? {
         guard try statement.step() == .row else {
             return nil
         }

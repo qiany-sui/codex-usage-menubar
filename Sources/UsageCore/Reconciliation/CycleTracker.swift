@@ -1,20 +1,26 @@
 import Foundation
 
 public struct CycleTracker: Sendable {
+    // 重置时间可能有秒级修正，避免将同一周期拆成短历史记录。
+    private static let boundaryTolerance: TimeInterval = 60
+
     public init() {}
 
     public func update(
         existing: [QuotaCycle],
         quota: QuotaSnapshot,
-        events: [StoredUsageEvent]
+        events: [StoredUsageEvent],
+        quotaHistory: [QuotaSnapshot] = []
     ) -> [QuotaCycle] {
-        var cycles = normalized(existing)
+        let resetStarts = observedResetStarts(quota: quota, history: quotaHistory)
+        let quotaStart = resetStarts[quota.startsAt] ?? quota.startsAt
+        var cycles = normalized(existing, resetStarts: resetStarts)
 
         if let current = cycles.last {
-            let startDifference = quota.startsAt.timeIntervalSince(
+            let startDifference = quotaStart.timeIntervalSince(
                 current.startsAt
             )
-            if abs(startDifference) <= 1 {
+            if sameReset(current.startsAt, quotaStart, resetStarts: resetStarts) {
                 cycles[cycles.count - 1] = QuotaCycle(
                     startsAt: current.startsAt,
                     endsAt: quota.resetsAt,
@@ -23,10 +29,10 @@ public struct CycleTracker: Sendable {
                     status: current.status,
                     boundaryIsEstimated: false
                 )
-            } else if startDifference > 1 {
+            } else if startDifference > 0 {
                 cycles[cycles.count - 1] = QuotaCycle(
                     startsAt: current.startsAt,
-                    endsAt: min(current.endsAt, quota.startsAt),
+                    endsAt: min(current.endsAt, quotaStart),
                     usage: current.usage,
                     displayedTokens: current.displayedTokens,
                     status: current.status,
@@ -34,7 +40,7 @@ public struct CycleTracker: Sendable {
                 )
                 cycles.append(
                     QuotaCycle(
-                        startsAt: quota.startsAt,
+                        startsAt: quotaStart,
                         endsAt: quota.resetsAt,
                         usage: .zero,
                         displayedTokens: 0,
@@ -46,7 +52,7 @@ public struct CycleTracker: Sendable {
         } else {
             cycles.append(
                 QuotaCycle(
-                    startsAt: quota.startsAt,
+                    startsAt: quotaStart,
                     endsAt: quota.resetsAt,
                     usage: .zero,
                     displayedTokens: 0,
@@ -98,8 +104,70 @@ public struct CycleTracker: Sendable {
         return Array(cycles.sorted { $0.startsAt < $1.startsAt }.suffix(9))
     }
 
-    private func normalized(_ existing: [QuotaCycle]) -> [QuotaCycle] {
-        let sorted = existing.sorted {
+    func observedResetStarts(
+        quota: QuotaSnapshot,
+        history: [QuotaSnapshot]
+    ) -> [Date: Date] {
+        let observations = (history + [quota]).filter {
+            $0.limitID == quota.limitID && $0.fetchedAt <= quota.fetchedAt
+                && $0.usedPercent.isFinite && $0.usedPercent >= 0
+        }.sorted { $0.fetchedAt < $1.fetchedAt }
+        var starts: [Date: Date] = [:]
+        var previous: QuotaSnapshot?
+        var resetStart = quota.startsAt
+        var hasConsumedQuota = false
+        for observation in observations {
+            var continuesReset = false
+            if let previous,
+               previous.windowDurationMinutes == observation.windowDurationMinutes {
+                let difference = observation.startsAt.timeIntervalSince(previous.startsAt)
+                // 服务端可能先清零、再更新起点，因此检查整个周期是否曾消耗额度。
+                let consumedThenReset = difference > 0
+                    && hasConsumedQuota && observation.usedPercent == 0
+                // 重置后已用额度仍为 0 时，起点还会随首次使用修正；这些读数属于同一次重置。
+                // 不跨越离线空档推断两次重置属于同一次。
+                let pendingStartCorrection = !hasConsumedQuota && difference > 0
+                    && observation.startsAt < previous.resetsAt
+                    && observation.fetchedAt.timeIntervalSince(previous.fetchedAt) <= 600
+                continuesReset = !consumedThenReset
+                    && (abs(difference) <= Self.boundaryTolerance || pendingStartCorrection)
+            }
+            if !continuesReset {
+                resetStart = observation.startsAt
+                hasConsumedQuota = false
+            }
+            starts[observation.startsAt] = resetStart
+            hasConsumedQuota = hasConsumedQuota || observation.usedPercent > 0
+            previous = observation
+        }
+        return starts
+    }
+
+    private func sameReset(
+        _ lhs: Date,
+        _ rhs: Date,
+        resetStarts: [Date: Date]
+    ) -> Bool {
+        if let left = resetStarts[lhs], let right = resetStarts[rhs] {
+            return left == right
+        }
+        return abs(lhs.timeIntervalSince(rhs)) <= Self.boundaryTolerance
+    }
+
+    private func normalized(
+        _ existing: [QuotaCycle],
+        resetStarts: [Date: Date]
+    ) -> [QuotaCycle] {
+        let sorted = existing.map { cycle in
+            QuotaCycle(
+                startsAt: resetStarts[cycle.startsAt] ?? cycle.startsAt,
+                endsAt: cycle.endsAt,
+                usage: cycle.usage,
+                displayedTokens: cycle.displayedTokens,
+                status: cycle.status,
+                boundaryIsEstimated: cycle.boundaryIsEstimated
+            )
+        }.sorted {
             if $0.startsAt != $1.startsAt {
                 return $0.startsAt < $1.startsAt
             }
@@ -111,7 +179,7 @@ public struct CycleTracker: Sendable {
         var merged: [QuotaCycle] = []
         for candidate in sorted {
             if let current = merged.last,
-               candidate.startsAt.timeIntervalSince(current.startsAt) <= 1 {
+               sameReset(current.startsAt, candidate.startsAt, resetStarts: resetStarts) {
                 merged[merged.count - 1] = QuotaCycle(
                     startsAt: current.startsAt,
                     endsAt: max(current.endsAt, candidate.endsAt),

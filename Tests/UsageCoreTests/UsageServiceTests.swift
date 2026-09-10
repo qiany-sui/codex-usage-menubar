@@ -213,6 +213,14 @@ actor ReadOnlyUsageStoreSpy: UsageStore {
         return storedQuota
     }
 
+    func quotaHistory(from: Date, to: Date, limitID: String) throws -> [QuotaSnapshot] {
+        snapshotReadCount += 1
+        guard let quota = storedQuota,
+              quota.limitID == limitID,
+              quota.fetchedAt <= to else { return [] }
+        return [quota]
+    }
+
     func save(refreshState: UsageRefreshState) throws {
         writeCount += 1
         storedRefreshState = refreshState

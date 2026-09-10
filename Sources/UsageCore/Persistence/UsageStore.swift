@@ -98,6 +98,7 @@ public protocol UsageStore: Actor {
     func officialDays() throws -> [OfficialUsageDay]
     func save(quota: QuotaSnapshot) throws
     func latestQuota() throws -> QuotaSnapshot?
+    func quotaHistory(from: Date, to: Date, limitID: String) throws -> [QuotaSnapshot]
     func save(refreshState: UsageRefreshState) throws
     func refreshState() throws -> UsageRefreshState
     func replace(cycles: [QuotaCycle]) throws
