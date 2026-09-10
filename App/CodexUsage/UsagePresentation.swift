@@ -40,13 +40,16 @@ struct OverviewPresentation: Equatable {
     let remainingPercent: String
     let progress: Double
     let resetCountdown: String
+    let resetTime: String?
     let todayTotal: String
+    let todayQuota: DayQuotaPresentation
     let inputTokens: String
     let cachedInputTokens: String
     let outputTokens: String
     let additiveSegments: [UsageSegment]
     let currentCycleTokens: String
     let currentCycleStatus: String
+    let currentCycleQuota: String
     let staleMessage: String?
     let lastUpdated: String
 
@@ -61,11 +64,18 @@ struct OverviewPresentation: Equatable {
                 resetsAt: quota.resetsAt,
                 now: now
             )
+            resetTime = UsageFormatters.resetTime(
+                quota.resetsAt,
+                timeZone: timeZone
+            )
         } else {
             progress = 0
             resetCountdown = "暂无数据"
+            resetTime = nil
         }
 
+        todayQuota = DayQuotaPresentation(day: snapshot.today, timeZone: timeZone)
+        currentCycleQuota = UsageFormatters.cycleQuotaUsage(snapshot.currentCycle?.quotaUsedPercent)
         todayTotal = UsageFormatters.tokens(today.totalTokens)
         inputTokens = UsageFormatters.tokens(today.inputTokens)
         cachedInputTokens = UsageFormatters.tokens(today.cachedInputTokens)
@@ -118,6 +128,70 @@ struct OverviewPresentation: Equatable {
     }
 }
 
+struct TrendQuotaSegmentPresentation: Equatable, Identifiable {
+    let id: Date
+    let label: String
+    let percent: String
+}
+
+struct DayQuotaPresentation: Equatable {
+    let percent: String
+    let segments: [TrendQuotaSegmentPresentation]
+    let resetLabel: String?
+    let help: String
+
+    var summary: String {
+        if segments.isEmpty {
+            return percent == "--" ? "额度记录不足" : "额度消耗 " + percent
+        }
+        if segments.count > 2 {
+            return "分\(segments.count)段：" + segments.map(\.percent).joined(separator: " / ")
+        }
+        return segments.map { $0.label + " " + $0.percent }.joined(separator: " · ")
+    }
+
+    init(day: UsageDay, timeZone: TimeZone) {
+        let time = DateFormatter()
+        time.calendar = Calendar(identifier: .gregorian)
+        time.locale = Locale(identifier: "en_US_POSIX")
+        time.timeZone = timeZone
+        time.dateFormat = "HH:mm"
+        let preciseTime = DateFormatter()
+        preciseTime.calendar = time.calendar
+        preciseTime.locale = time.locale
+        preciseTime.timeZone = timeZone
+        preciseTime.dateFormat = "M/d HH:mm:ss"
+        let rawSegments = day.quotaSegments ?? []
+        let resets = rawSegments.filter(\.startsWithReset)
+        let parts = rawSegments.enumerated().map { index, segment in
+            let label: String
+            if rawSegments.count == 1 {
+                label = "重置后"
+            } else if rawSegments.count == 2, !rawSegments[0].startsWithReset {
+                label = index == 0 ? "重置前" : "重置后"
+            } else {
+                label = "第\(index + 1)段"
+            }
+            return TrendQuotaSegmentPresentation(
+                id: segment.startsAt,
+                label: label,
+                percent: segment.consumedPercent.map { UsageFormatters.quotaConsumedPercent($0) }
+                    ?? "记录不足"
+            )
+        }
+        resetLabel = resets.count == 1
+            ? time.string(from: resets[0].startsAt) + " 重置"
+            : resets.isEmpty ? nil : "重置 \(resets.count) 次"
+        help = parts.isEmpty
+            ? "当天官方已用额度的增量；-- 表示边界记录不足。Token 校准状态不代表额度记录完整。"
+            : zip(rawSegments, parts).map { segment, part in
+                "\(preciseTime.string(from: segment.startsAt))–\(preciseTime.string(from: segment.endsAt)) \(part.label)：\(part.percent)"
+            }.joined(separator: "\n") + "\n每段按各自周期额度计算；Token 为全天总量。"
+        segments = parts
+        percent = parts.isEmpty ? UsageFormatters.quotaConsumedPercent(day.quotaConsumedPercent) : "已分段"
+    }
+}
+
 struct TrendDayPresentation: Equatable, Identifiable {
     var id: LocalDay { day }
 
@@ -127,22 +201,33 @@ struct TrendDayPresentation: Equatable, Identifiable {
     let formattedTokens: String
     let status: UsageCalibrationStatus
     let statusLabel: String
+    let quotaPercent: String
+    let quotaSegments: [TrendQuotaSegmentPresentation]
+    let resetLabel: String?
+    let quotaHelp: String
 }
 
 struct TrendPresentation: Equatable {
     let totalTokens: Int64
     let averageTokens: Int64
     let days: [TrendDayPresentation]
+    let today: LocalDay
 
-    init(snapshot: UsageSnapshot) {
+    init(snapshot: UsageSnapshot, timeZone: TimeZone = .autoupdatingCurrent) {
+        today = snapshot.today.day
         days = snapshot.recentDays.suffix(7).map { day in
-            TrendDayPresentation(
+            let quota = DayQuotaPresentation(day: day, timeZone: timeZone)
+            return TrendDayPresentation(
                 day: day.day,
                 label: UsageFormatters.day(day.day),
                 tokens: day.displayedTokens,
                 formattedTokens: UsageFormatters.tokens(day.displayedTokens),
                 status: day.status,
-                statusLabel: UsageFormatters.calibration(day.status)
+                statusLabel: UsageFormatters.calibration(day.status),
+                quotaPercent: quota.percent,
+                quotaSegments: quota.segments,
+                resetLabel: quota.resetLabel,
+                quotaHelp: quota.help
             )
         }
         totalTokens = days.reduce(0) { $0 + $1.tokens }
@@ -159,6 +244,7 @@ struct CycleEntryPresentation: Equatable, Identifiable {
     let statusLabel: String
     let isCurrent: Bool
     let boundaryIsEstimated: Bool
+    let quotaUsage: String
 }
 
 struct CycleHistoryPresentation: Equatable {
@@ -200,7 +286,8 @@ struct CycleHistoryPresentation: Equatable {
                     item.cycle.status
                 ),
                 isCurrent: item.isCurrent,
-                boundaryIsEstimated: item.cycle.boundaryIsEstimated
+                boundaryIsEstimated: item.cycle.boundaryIsEstimated,
+                quotaUsage: UsageFormatters.cycleQuotaUsage(item.cycle.quotaUsedPercent)
             )
         }
     }
@@ -208,7 +295,7 @@ struct CycleHistoryPresentation: Equatable {
 
 #if DEBUG
 enum UsagePreviewData {
-    static let now = Date(timeIntervalSince1970: 1_788_249_600)
+    static let now = Date(timeIntervalSince1970: 1788935520)
     static let timeZone = TimeZone(identifier: "Asia/Shanghai")!
 
     static let fullSnapshot = makeSnapshot(status: .partiallyCalibrated)
@@ -237,14 +324,15 @@ enum UsagePreviewData {
             todayUsage.totalTokens
         ]
         let days = [
-            LocalDay(year: 2026, month: 8, day: 26),
-            LocalDay(year: 2026, month: 8, day: 27),
-            LocalDay(year: 2026, month: 8, day: 28),
-            LocalDay(year: 2026, month: 8, day: 29),
-            LocalDay(year: 2026, month: 8, day: 30),
-            LocalDay(year: 2026, month: 8, day: 31),
-            LocalDay(year: 2026, month: 9, day: 1)
+            LocalDay(year: 2026, month: 9, day: 3),
+            LocalDay(year: 2026, month: 9, day: 4),
+            LocalDay(year: 2026, month: 9, day: 5),
+            LocalDay(year: 2026, month: 9, day: 6),
+            LocalDay(year: 2026, month: 9, day: 7),
+            LocalDay(year: 2026, month: 9, day: 8),
+            LocalDay(year: 2026, month: 9, day: 9)
         ]
+        let quotaConsumption: [Double?] = [nil, 8, 0, 6, nil, 9, 7]
         let recentDays = totals.enumerated().map { index, total in
             UsageDay(
                 day: days[index],
@@ -255,7 +343,8 @@ enum UsagePreviewData {
                 ),
                 officialTokens: index < totals.count - 1 ? total : nil,
                 displayedTokens: total,
-                status: index < totals.count - 1 ? .calibrated : .localLive
+                status: index < totals.count - 1 ? .calibrated : .localLive,
+                quotaConsumedPercent: includesQuota ? quotaConsumption[index] : nil
             )
         }
         let cycleUsage = TokenBreakdown(
@@ -304,7 +393,7 @@ enum UsagePreviewData {
         return UsageSnapshot(
             quota: quota,
             today: UsageDay(
-                day: LocalDay(year: 2026, month: 9, day: 1),
+                day: LocalDay(year: 2026, month: 9, day: 9),
                 localUsage: todayUsage,
                 officialTokens: nil,
                 displayedTokens: todayUsage.totalTokens,

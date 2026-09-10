@@ -1,13 +1,15 @@
 import SwiftUI
 
 struct CycleHistoryView: View {
+    @Environment(\.usageColors) private var colors
+
     let presentation: CycleHistoryPresentation
     let onBack: () -> Void
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            header
 
+    var body: some View {
+        VStack(alignment: .leading, spacing: 13) {
+            header
             if presentation.entries.isEmpty {
                 emptyState
             } else {
@@ -15,52 +17,55 @@ struct CycleHistoryView: View {
                     LazyVStack(spacing: 0) {
                         ForEach(presentation.entries) { entry in
                             cycleRow(entry)
-                            if entry.id != presentation.entries.last?.id {
-                                Divider().overlay(UsageTheme.border)
-                            }
+                                .padding(.bottom, entry.isCurrent ? 3 : 0)
                         }
                     }
-                    .padding(.trailing, 12)
                 }
             }
         }
         .padding(UsageTheme.pagePadding)
-        .frame(
-            maxWidth: .infinity,
-            maxHeight: .infinity,
-            alignment: .topLeading
-        )
-        .foregroundStyle(UsageTheme.primaryText)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .foregroundStyle(colors.primaryText)
     }
 
     private var header: some View {
         HStack(spacing: 9) {
             Button(action: onBack) {
                 Image(systemName: "chevron.left")
-                    .font(.system(size: 12, weight: .semibold))
-                    .frame(width: 26, height: 26)
-                    .background(UsageTheme.surface, in: Circle())
+                    .font(.system(size: 14))
+                    .foregroundStyle(colors.secondaryText)
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("返回概览")
 
             Text("历史周期")
-                .font(.system(size: 15, weight: .semibold))
+                .font(.system(size: 14, weight: .medium))
+            Spacer(minLength: 6)
+            if !presentation.entries.isEmpty {
+                Text(
+                    presentation.entries.first?.isCurrent == true
+                        ? "当前 + 最近 \(presentation.entries.count - 1) 个"
+                        : "最近 \(presentation.entries.count) 个"
+                )
+                .font(.system(size: 11))
+                .foregroundStyle(colors.secondaryText)
+            }
         }
+        .frame(height: 32)
     }
 
     private func cycleRow(_ entry: CycleEntryPresentation) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-            VStack(alignment: .leading, spacing: 2) {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 6) {
                     Text(entry.range)
-                        .font(.system(size: 12, weight: .medium))
                     if entry.isCurrent {
-                        Text("当前周期")
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundStyle(UsageTheme.accentBlue)
+                        Text("当前").foregroundStyle(colors.accent)
                     }
                 }
+                .frame(height: 15.4)
 
                 HStack(spacing: 6) {
                     Text(entry.statusLabel)
@@ -68,29 +73,35 @@ struct CycleHistoryView: View {
                         Text("边界估算")
                     }
                 }
-                .font(.system(size: 10))
-                .foregroundStyle(UsageTheme.secondaryText)
+                .foregroundStyle(colors.secondaryText)
+                .frame(height: 15.4)
             }
+            .font(.system(size: 11))
 
-            Spacer(minLength: 12)
+            Spacer(minLength: 8)
 
-            Text(entry.formattedTokens)
-                .font(.system(size: 15, weight: .semibold))
-                .monospacedDigit()
-                .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
+            VStack(alignment: .trailing, spacing: 1) {
+                Text(entry.formattedTokens)
+                    .font(.system(size: 14, weight: .medium))
+                    .monospacedDigit()
+                Text(entry.quotaUsage)
+                    .font(.system(size: 10))
+                    .foregroundStyle(colors.secondaryText)
+                    .monospacedDigit()
+                    .help(entry.isCurrent
+                        ? "当前周期累计已用额度，来自最近一次官方额度记录。"
+                        : "该周期结束前 10 分钟内的最后一条官方额度记录。记录不足或边界为估算时不推算百分比；Token 校准状态单独判断。")
+            }
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
         }
-        .padding(.leading, 20)
-        .padding(.trailing, 7)
-        .frame(height: 46)
-        .background(entry.isCurrent ? UsageTheme.surface : Color.clear)
+        .padding(.horizontal, 8)
+        .frame(height: 38)
+        .background(entry.isCurrent ? colors.tint : .clear)
         .clipShape(RoundedRectangle(cornerRadius: 7))
-        .overlay(alignment: .leading) {
-            if entry.isCurrent {
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(UsageTheme.accent)
-                    .frame(width: 3, height: 34)
-                    .padding(.leading, 7)
+        .overlay(alignment: .bottom) {
+            if !entry.isCurrent && entry.id != presentation.entries.last?.id {
+                Rectangle().fill(colors.border).frame(height: 1)
             }
         }
     }
@@ -100,12 +111,11 @@ struct CycleHistoryView: View {
             Spacer()
             Image(systemName: "clock.arrow.circlepath")
                 .font(.system(size: 30, weight: .light))
-                .foregroundStyle(UsageTheme.secondaryText)
             Text("暂无周期历史")
                 .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(UsageTheme.secondaryText)
             Spacer()
         }
+        .foregroundStyle(colors.secondaryText)
         .frame(maxWidth: .infinity)
     }
 }
@@ -119,11 +129,7 @@ struct CycleHistoryView: View {
         ),
         onBack: {}
     )
-    .frame(
-        width: UsageTheme.popoverSize.width,
-        height: UsageTheme.popoverSize.height
-    )
-    .background(UsageTheme.background)
+    .modifier(UsagePopoverSurface(style: .native))
     .preferredColorScheme(.dark)
 }
 #endif

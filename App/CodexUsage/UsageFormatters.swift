@@ -12,6 +12,24 @@ enum UsageFormatters {
         return "\(Int(rounded))%"
     }
 
+    static func quotaConsumedPercent(_ value: Double?) -> String {
+        guard let value, value.isFinite, value >= 0 else {
+            return "--"
+        }
+        if value == 0 { return "0%" }
+        if value < 0.1 { return "<0.1%" }
+        return String(
+            format: value.rounded() == value ? "%.0f%%" : "%.1f%%",
+            locale: Locale(identifier: "en_US_POSIX"),
+            value
+        )
+    }
+
+    static func cycleQuotaUsage(_ value: Double?) -> String {
+        let percent = quotaConsumedPercent(value)
+        return percent == "--" ? "额度记录不足" : "额度已用 " + percent
+    }
+
     static func menuBarTitle(
         remainingPercent: Double?,
         isFatal: Bool
@@ -96,6 +114,15 @@ enum UsageFormatters {
         formatter.locale = locale
         formatter.timeZone = timeZone
         formatter.dateFormat = "M/d HH:mm"
+        return formatter.string(from: value)
+    }
+
+    static func resetTime(_ value: Date, timeZone: TimeZone) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = timeZone
+        formatter.dateFormat = "MM/dd · HH:mm"
         return formatter.string(from: value)
     }
 

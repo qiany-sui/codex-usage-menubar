@@ -4,6 +4,7 @@ import UsageCore
 
 struct UsagePopoverView: View {
     @ObservedObject var viewModel: UsageViewModel
+    @AppStorage(UsageStyle.storageKey) var style: UsageStyle = .native
 
     private let now: () -> Date
     private let timeZone: TimeZone
@@ -11,20 +12,25 @@ struct UsagePopoverView: View {
     init(
         viewModel: UsageViewModel,
         now: @escaping () -> Date = Date.init,
-        timeZone: TimeZone = .autoupdatingCurrent
+        timeZone: TimeZone = .autoupdatingCurrent,
+        styleDefaults: UserDefaults = .standard
     ) {
         self.viewModel = viewModel
+        _style = AppStorage(
+            wrappedValue: .native,
+            UsageStyle.storageKey,
+            store: styleDefaults
+        )
         self.now = now
         self.timeZone = timeZone
     }
 
     var body: some View {
         stateContent
-            .frame(
-                width: UsageTheme.popoverSize.width,
-                height: UsageTheme.popoverSize.height
-            )
-            .background(.regularMaterial)
+            .modifier(UsagePopoverSurface(
+                style: style,
+                isLowQuota: (viewModel.snapshot?.quota?.remainingPercent ?? 100) <= 10
+            ))
     }
 
     @ViewBuilder
@@ -59,6 +65,7 @@ struct UsagePopoverView: View {
                         now: now(),
                         timeZone: timeZone
                     ),
+                    style: $style,
                     isRefreshing: viewModel.isRefreshing,
                     showsCodexHomeAction: viewModel.needsCodexHomeSelection,
                     onRefresh: {
@@ -75,7 +82,7 @@ struct UsagePopoverView: View {
                 )
             case .trend:
                 TrendDetailView(
-                    presentation: TrendPresentation(snapshot: snapshot),
+                    presentation: TrendPresentation(snapshot: snapshot, timeZone: timeZone),
                     onBack: viewModel.showOverview
                 )
             case .history:
@@ -92,37 +99,39 @@ struct UsagePopoverView: View {
 }
 
 private struct LoadingUsageState: View {
+    @Environment(\.usageColors) private var colors
     var body: some View {
         VStack(spacing: 14) {
             ProgressView()
                 .controlSize(.regular)
             Text("正在读取本机用量…")
                 .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(UsageTheme.secondaryText)
+                .foregroundStyle(colors.secondaryText)
         }
     }
 }
 
 private struct CodexHomeSelectionState: View {
+    @Environment(\.usageColors) private var colors
     let onChoose: () -> Void
 
     var body: some View {
         VStack(spacing: 18) {
             Image(systemName: "folder.badge.questionmark")
                 .font(.system(size: 34, weight: .light))
-                .foregroundStyle(UsageTheme.accent)
+                .foregroundStyle(colors.accent)
             VStack(spacing: 6) {
                 Text("需要访问 Codex Home")
                     .font(.system(size: 16, weight: .semibold))
                 Text("请选择包含 sessions 或 archived_sessions 的目录。\n应用只读取本机用量事件，不读取对话正文。")
                     .font(.system(size: 12))
-                    .foregroundStyle(UsageTheme.secondaryText)
+                    .foregroundStyle(colors.secondaryText)
                     .multilineTextAlignment(.center)
                     .lineSpacing(2)
             }
             Button("选择 Codex Home", action: onChoose)
                 .buttonStyle(.borderedProminent)
-                .tint(UsageTheme.accent)
+                .tint(colors.accent)
                 .accessibilityLabel("选择 Codex Home")
         }
         .padding(36)
@@ -130,25 +139,26 @@ private struct CodexHomeSelectionState: View {
 }
 
 private struct FatalUsageState: View {
+    @Environment(\.usageColors) private var colors
     let onRetry: () -> Void
 
     var body: some View {
         VStack(spacing: 18) {
             Image(systemName: "exclamationmark.triangle")
                 .font(.system(size: 32, weight: .light))
-                .foregroundStyle(UsageTheme.danger)
+                .foregroundStyle(colors.danger)
             VStack(spacing: 6) {
                 Text("无法读取本地用量")
                     .font(.system(size: 16, weight: .semibold))
                 Text(UsageViewModel.databaseFailureMessage)
                     .font(.system(size: 12))
-                    .foregroundStyle(UsageTheme.secondaryText)
+                    .foregroundStyle(colors.secondaryText)
                     .multilineTextAlignment(.center)
                     .lineSpacing(2)
             }
             Button("重试", action: onRetry)
                 .buttonStyle(.borderedProminent)
-                .tint(UsageTheme.accent)
+                .tint(colors.accent)
                 .accessibilityLabel("重试读取用量")
         }
         .padding(36)
@@ -156,13 +166,14 @@ private struct FatalUsageState: View {
 }
 
 private struct EmptyUsageState: View {
+    @Environment(\.usageColors) private var colors
     let onRefresh: () -> Void
 
     var body: some View {
         VStack(spacing: 16) {
             Image(systemName: "chart.bar.xaxis")
                 .font(.system(size: 32, weight: .light))
-                .foregroundStyle(UsageTheme.secondaryText)
+                .foregroundStyle(colors.secondaryText)
             Text("暂时没有可显示的用量数据")
                 .font(.system(size: 14, weight: .semibold))
             Button("刷新", action: onRefresh)

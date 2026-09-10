@@ -31,6 +31,61 @@ enum RecordedRefreshReason: Equatable, Hashable, Sendable {
 
 @MainActor
 final class UsageViewModelTests: XCTestCase {
+    func testPopoverDefaultsToNativeStyleWithoutSavedPreference() {
+        let defaults = isolatedStyleDefaults()
+        let popover = UsagePopoverView(
+            viewModel: ViewModelFixture().viewModel,
+            styleDefaults: defaults
+        )
+
+        XCTAssertEqual(popover.style, .native)
+    }
+
+    func testPopoverFallsBackToNativeForUnknownSavedStyle() {
+        let defaults = isolatedStyleDefaults()
+        defaults.set("removed-style", forKey: "interfaceStyle")
+        let popover = UsagePopoverView(
+            viewModel: ViewModelFixture().viewModel,
+            styleDefaults: defaults
+        )
+
+        XCTAssertEqual(popover.style, .native)
+    }
+
+    func testPopoverRestoresStyleAfterRecreation() {
+        let defaults = isolatedStyleDefaults()
+        let fixture = ViewModelFixture()
+        let popover = UsagePopoverView(
+            viewModel: fixture.viewModel,
+            styleDefaults: defaults
+        )
+
+        popover.style = .orbit
+        XCTAssertEqual(defaults.string(forKey: "interfaceStyle"), "orbit")
+        let restored = UsagePopoverView(
+            viewModel: fixture.viewModel,
+            styleDefaults: defaults
+        )
+        XCTAssertEqual(restored.style, .orbit)
+
+        restored.style = .native
+        let restoredAgain = UsagePopoverView(
+            viewModel: fixture.viewModel,
+            styleDefaults: defaults
+        )
+        XCTAssertEqual(restoredAgain.style, .native)
+        XCTAssertEqual(defaults.string(forKey: "interfaceStyle"), "native")
+    }
+
+    private func isolatedStyleDefaults() -> UserDefaults {
+        let name = "CodexUsageStyleTests-" + UUID().uuidString
+        let defaults = UserDefaults(suiteName: name)!
+        addTeardownBlock {
+            defaults.removePersistentDomain(forName: name)
+        }
+        return defaults
+    }
+
     func testStartPublishesSnapshotAndResolvedHome() async throws {
         let snapshot = try sampleSnapshot(status: .calibrated)
         let fixture = ViewModelFixture(snapshot: snapshot)

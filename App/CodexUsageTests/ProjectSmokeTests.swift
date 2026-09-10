@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import UsageCore
 import XCTest
@@ -68,23 +69,39 @@ final class ProjectSmokeTests: XCTestCase {
         )
     }
 
-    func testPopoverUsesNativeMaterialWithoutForcingDarkAppearance() throws {
+    func testPopoverDoesNotForceAppearanceOrUseWallpaperDependentMaterial() throws {
         let source = try appSource(named: "UsagePopoverView.swift")
 
-        XCTAssertTrue(source.contains(".background(.regularMaterial)"))
+        XCTAssertFalse(source.contains(".background(.regularMaterial)"))
         XCTAssertFalse(source.contains(".preferredColorScheme(.dark)"))
     }
 
-    func testUsageThemeUsesSystemSemanticColors() throws {
-        let source = try appSource(named: "UsageTheme.swift")
+    func testApprovedPalettesAdaptToAppearance() throws {
+        let cases: [(UsageStyle, NSAppearance.Name, UInt32, UInt32)] = [
+            (.native, .aqua, 0xf6f7f9, 0x2868c7),
+            (.native, .darkAqua, 0x232428, 0x81b2ff),
+            (.orbit, .aqua, 0xf5f4f8, 0x7952b8),
+            (.orbit, .darkAqua, 0x222127, 0xbb9de9)
+        ]
 
-        XCTAssertTrue(source.contains("Color(nsColor: .windowBackgroundColor)"))
-        XCTAssertTrue(source.contains("Color(nsColor: .controlBackgroundColor)"))
-        XCTAssertTrue(source.contains("Color(nsColor: .separatorColor)"))
-        XCTAssertTrue(source.contains("Color(nsColor: .labelColor)"))
-        XCTAssertTrue(source.contains("Color(nsColor: .secondaryLabelColor)"))
-        XCTAssertTrue(source.contains("Color(nsColor: .controlAccentColor)"))
-        XCTAssertFalse(source.contains("Color(red:"))
+        for (style, appearanceName, background, accent) in cases {
+            let appearance = try XCTUnwrap(NSAppearance(named: appearanceName))
+            appearance.performAsCurrentDrawingAppearance {
+                for (color, expected) in [
+                    (style.colors.background, background),
+                    (style.colors.accent, accent)
+                ] {
+                    guard let rgb = NSColor(color).usingColorSpace(.sRGB) else {
+                        XCTFail("无法解析配色")
+                        continue
+                    }
+                    XCTAssertEqual(rgb.redComponent, CGFloat((expected >> 16) & 0xff) / 255, accuracy: 0.001)
+                    XCTAssertEqual(rgb.greenComponent, CGFloat((expected >> 8) & 0xff) / 255, accuracy: 0.001)
+                    XCTAssertEqual(rgb.blueComponent, CGFloat(expected & 0xff) / 255, accuracy: 0.001)
+                    XCTAssertEqual(rgb.alphaComponent, 1)
+                }
+            }
+        }
     }
 
     func testOverviewAndTrendDoNotUseCustomAccentGradients() throws {

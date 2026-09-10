@@ -14,6 +14,18 @@ final class UsageFormattersTests: XCTestCase {
         XCTAssertEqual(UsageFormatters.remainingPercent(120), "100%")
     }
 
+    func testQuotaConsumedPercentDistinguishesMissingZeroAndSmallUsage() {
+        XCTAssertEqual(UsageFormatters.quotaConsumedPercent(nil), "--")
+        XCTAssertEqual(UsageFormatters.quotaConsumedPercent(.nan), "--")
+        XCTAssertEqual(UsageFormatters.quotaConsumedPercent(-1), "--")
+        XCTAssertEqual(UsageFormatters.quotaConsumedPercent(0), "0%")
+        XCTAssertEqual(UsageFormatters.quotaConsumedPercent(0.04), "<0.1%")
+        XCTAssertEqual(UsageFormatters.quotaConsumedPercent(12.34), "12.3%")
+        XCTAssertEqual(UsageFormatters.quotaConsumedPercent(7), "7%")
+        XCTAssertEqual(UsageFormatters.quotaConsumedPercent(100), "100%")
+        XCTAssertEqual(UsageFormatters.quotaConsumedPercent(125), "125%")
+    }
+
     func testMenuBarTitleKeepsStatusIconSeparateFromText() {
         XCTAssertEqual(
             UsageFormatters.menuBarTitle(

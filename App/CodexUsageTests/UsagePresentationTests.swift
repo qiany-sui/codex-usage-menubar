@@ -102,6 +102,35 @@ final class UsagePresentationTests: XCTestCase {
         XCTAssertEqual(presentation.outputTokens, "37.7万")
     }
 
+    func testOverviewAndHistoryDisplayEachCyclesOwnQuotaPercentage() throws {
+        let base = try sampleSnapshot()
+        let current = try XCTUnwrap(base.currentCycle)
+        let old = try XCTUnwrap(base.cycleHistory.first)
+        func withPercent(_ cycle: QuotaCycle, _ value: Double?) -> QuotaCycle {
+            QuotaCycle(
+                startsAt: cycle.startsAt, endsAt: cycle.endsAt, usage: cycle.usage,
+                displayedTokens: cycle.displayedTokens, status: cycle.status,
+                boundaryIsEstimated: cycle.boundaryIsEstimated, quotaUsedPercent: value
+            )
+        }
+        for historicalValue: Double? in [98, 0, nil] {
+            let snapshot = UsageSnapshot(
+                quota: base.quota, today: base.today,
+                currentCycle: withPercent(current, 32), recentDays: base.recentDays,
+                cycleHistory: [withPercent(old, historicalValue)],
+                lastUpdatedAt: base.lastUpdatedAt, status: base.status
+            )
+            let overview = OverviewPresentation(snapshot: snapshot, now: base.lastUpdatedAt, timeZone: timeZone)
+            let history = CycleHistoryPresentation(snapshot: snapshot, timeZone: timeZone)
+            XCTAssertEqual(overview.currentCycleQuota, "额度已用 32%")
+            XCTAssertEqual(history.entries.first?.quotaUsage, "额度已用 32%")
+            let expected = historicalValue == 98 ? "额度已用 98%"
+                : historicalValue == 0 ? "额度已用 0%" : "额度记录不足"
+            XCTAssertEqual(history.entries.last?.quotaUsage, expected)
+            XCTAssertEqual(history.entries.last?.formattedTokens, UsageFormatters.tokens(old.displayedTokens))
+        }
+    }
+
     func testOverviewMapsQuotaCycleAndStaleState() throws {
         let presentation = OverviewPresentation(
             snapshot: try sampleSnapshot(status: .stale),
@@ -112,6 +141,7 @@ final class UsagePresentationTests: XCTestCase {
         XCTAssertEqual(presentation.remainingPercent, "62%")
         XCTAssertEqual(presentation.progress, 0.62, accuracy: 0.001)
         XCTAssertEqual(presentation.resetCountdown, "1 天后重置")
+        XCTAssertEqual(presentation.resetTime, "09/02 · 16:00")
         XCTAssertEqual(presentation.staleMessage, "数据可能已过期")
         XCTAssertFalse(presentation.currentCycleTokens.isEmpty)
         XCTAssertEqual(presentation.currentCycleStatus, "数据可能已过期")
@@ -138,8 +168,11 @@ final class UsagePresentationTests: XCTestCase {
         XCTAssertEqual(presentation.remainingPercent, "--")
         XCTAssertEqual(presentation.progress, 0)
         XCTAssertEqual(presentation.resetCountdown, "暂无数据")
+        XCTAssertNil(presentation.resetTime)
         XCTAssertEqual(presentation.currentCycleTokens, "--")
         XCTAssertEqual(presentation.currentCycleStatus, "暂无数据")
+        XCTAssertEqual(presentation.currentCycleQuota, "额度记录不足")
+        XCTAssertEqual(presentation.todayQuota.summary, "额度记录不足")
     }
 
     func testOverviewClampsProgressToValidRange() throws {
@@ -212,6 +245,118 @@ final class UsagePresentationTests: XCTestCase {
                 .days.map(\.formattedTokens),
             ["3.2亿", "6.8亿", "6.9亿", "8200.0万", "0"]
         )
+    }
+
+    func testTrendDisplaysObservedQuotaConsumptionAlongsideDailyTokens() throws {
+        let base = try sampleSnapshot()
+        let today = UsageDay(
+            day: base.today.day,
+            localUsage: base.today.localUsage,
+            officialTokens: nil,
+            displayedTokens: 120,
+            status: .localLive,
+            quotaConsumedPercent: 12.34
+        )
+        let snapshot = UsageSnapshot(
+            quota: base.quota,
+            today: today,
+            currentCycle: base.currentCycle,
+            recentDays: [base.recentDays[0], today],
+            cycleHistory: base.cycleHistory,
+            lastUpdatedAt: base.lastUpdatedAt,
+            status: base.status
+        )
+
+        let trend = TrendPresentation(snapshot: snapshot)
+
+        XCTAssertEqual(trend.days.map(\.quotaPercent), ["--", "12.3%"])
+        XCTAssertEqual(trend.days.last?.formattedTokens, "120")
+        XCTAssertEqual(trend.days.last?.status, .localLive)
+        XCTAssertTrue(trend.days.allSatisfy { $0.quotaSegments.isEmpty && $0.resetLabel == nil })
+    }
+
+    func testTrendDoesNotPresentCrossResetSumAsSingleCyclePercentage() throws {
+        let base = try sampleSnapshot()
+        let start = Date(timeIntervalSince1970: 1788883200)
+        let reset = start.addingTimeInterval(16 * 3600 + 28 * 60 + 52)
+        let end = start.addingTimeInterval(17 * 3600)
+        let today = UsageDay(
+            day: base.today.day, localUsage: base.today.localUsage,
+            officialTokens: nil, displayedTokens: 380_000_000, status: .localLive,
+            quotaConsumedPercent: 58,
+            quotaSegments: [
+                QuotaConsumptionSegment(startsAt: start, endsAt: reset, consumedPercent: 52, startsWithReset: false),
+                QuotaConsumptionSegment(startsAt: reset, endsAt: end, consumedPercent: 6, startsWithReset: true)
+            ]
+        )
+        let snapshot = UsageSnapshot(
+            quota: base.quota, today: today, currentCycle: base.currentCycle,
+            recentDays: [today], cycleHistory: [], lastUpdatedAt: end, status: .localLive
+        )
+        let trend = TrendPresentation(snapshot: snapshot, timeZone: timeZone)
+        XCTAssertEqual(trend.days.first?.quotaSegments.map(\.label), ["重置前", "重置后"])
+        XCTAssertEqual(trend.days.first?.quotaSegments.map(\.percent), ["52%", "6%"])
+        XCTAssertEqual(trend.days.first?.resetLabel, "16:28 重置")
+        XCTAssertTrue(trend.days.first?.quotaHelp.contains("16:28:52") == true)
+        XCTAssertEqual(
+            TrendPresentation(snapshot: snapshot, timeZone: TimeZone(secondsFromGMT: 0)!).days.first?.resetLabel,
+            "08:28 重置"
+        )
+        XCTAssertEqual(trend.days.first?.quotaPercent, "已分段")
+        XCTAssertEqual(trend.days.first?.formattedTokens, "3.8亿")
+        XCTAssertEqual(trend.totalTokens, 380_000_000)
+        let overview = OverviewPresentation(snapshot: snapshot, now: end, timeZone: timeZone)
+        XCTAssertEqual(overview.todayQuota.summary, "重置前 52% · 重置后 6%")
+        XCTAssertEqual(overview.todayQuota.segments.map(\.percent), ["52%", "6%"])
+        XCTAssertEqual(overview.todayQuota.help, trend.days.first?.quotaHelp)
+    }
+
+    func testTrendLabelsMultipleResetsChronologicallyAndPreservesUnknownSegments() throws {
+        let base = try sampleSnapshot()
+        let start = Date(timeIntervalSince1970: 1788883200)
+        let firstReset = start.addingTimeInterval(10 * 3600)
+        let secondReset = start.addingTimeInterval(16 * 3600)
+        let end = start.addingTimeInterval(17 * 3600)
+        let day = UsageDay(
+            day: base.today.day, localUsage: base.today.localUsage,
+            officialTokens: nil, displayedTokens: 100, status: .localLive,
+            quotaSegments: [
+                QuotaConsumptionSegment(startsAt: start, endsAt: firstReset, consumedPercent: nil, startsWithReset: false),
+                QuotaConsumptionSegment(startsAt: firstReset, endsAt: secondReset, consumedPercent: 5, startsWithReset: true),
+                QuotaConsumptionSegment(startsAt: secondReset, endsAt: end, consumedPercent: 6, startsWithReset: true)
+            ]
+        )
+        let snapshot = UsageSnapshot(
+            quota: base.quota, today: day, currentCycle: base.currentCycle,
+            recentDays: [day], cycleHistory: [], lastUpdatedAt: end, status: .localLive
+        )
+        let row = try XCTUnwrap(TrendPresentation(snapshot: snapshot, timeZone: timeZone).days.first)
+        XCTAssertEqual(row.quotaSegments.map(\.label), ["第1段", "第2段", "第3段"])
+        XCTAssertEqual(row.quotaSegments.map(\.percent), ["记录不足", "5%", "6%"])
+        XCTAssertEqual(row.resetLabel, "重置 2 次")
+        XCTAssertTrue(row.quotaHelp.contains("9/9 10:00:00–9/9 16:00:00"))
+        let overview = OverviewPresentation(snapshot: snapshot, now: end, timeZone: timeZone)
+        XCTAssertEqual(overview.todayQuota.summary, "分3段：记录不足 / 5% / 6%")
+    }
+
+    func testTrendShowsBothDatesForAMidnightToMidnightSegment() throws {
+        let base = try sampleSnapshot()
+        let start = Date(timeIntervalSince1970: 1788796800)
+        let end = start.addingTimeInterval(24 * 3600)
+        let day = UsageDay(
+            day: LocalDay(year: 2026, month: 9, day: 8), localUsage: .zero,
+            officialTokens: 100, displayedTokens: 100, status: .calibrated,
+            quotaSegments: [
+                QuotaConsumptionSegment(startsAt: start, endsAt: end, consumedPercent: 46, startsWithReset: true)
+            ]
+        )
+        let snapshot = UsageSnapshot(
+            quota: base.quota, today: base.today, currentCycle: base.currentCycle,
+            recentDays: [day], cycleHistory: [], lastUpdatedAt: end, status: .localLive
+        )
+        let row = try XCTUnwrap(TrendPresentation(snapshot: snapshot, timeZone: timeZone).days.first)
+        XCTAssertTrue(row.quotaHelp.contains("9/8 00:00:00–9/9 00:00:00"))
+        XCTAssertEqual(row.quotaSegments.map(\.label), ["重置后"])
     }
 
     func testTrendRetainsPerDayCalibrationStatus() throws {
