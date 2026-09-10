@@ -6,6 +6,7 @@ import ServiceManagement
 enum CompanionServiceRegistration {
     private static let plistName = "com.local.CodexUsage.Watcher.plist"
     private static let helperRelativePath = "Contents/MacOS/CodexUsageWatcher"
+    // 复用旧键，旧版只记录助手的指纹会自然触发一次注册更新。
     private static let fingerprintDefaultsKey = "companionHelperFingerprint"
     private static let logger = Logger(
         subsystem: "com.local.CodexUsage",
@@ -35,7 +36,7 @@ enum CompanionServiceRegistration {
         }
 
         let service = SMAppService.agent(plistName: plistName)
-        let currentFingerprint = helperFingerprint()
+        let currentFingerprint = registrationFingerprint()
         let storedFingerprint = UserDefaults.standard.string(
             forKey: fingerprintDefaultsKey
         )
@@ -77,15 +78,26 @@ enum CompanionServiceRegistration {
         }
     }
 
-    private static func helperFingerprint() -> String? {
-        let helperURL = Bundle.main.bundleURL.appendingPathComponent(
-            helperRelativePath,
-            isDirectory: false
-        )
-        guard let data = try? Data(contentsOf: helperURL, options: .mappedIfSafe) else {
+    static func registrationFingerprint(for bundle: Bundle = .main) -> String? {
+        guard let executableURL = bundle.executableURL else {
             return nil
         }
-        return SHA256.hash(data: data)
+        let appURL = bundle.bundleURL.standardizedFileURL.resolvingSymlinksInPath()
+        var fingerprint = SHA256()
+        fingerprint.update(data: Data(appURL.path.utf8))
+
+        // 本机签名随主 App 更新而变化；只比较助手会漏掉已失效的系统注册。
+        for url in [
+            executableURL,
+            appURL.appendingPathComponent(helperRelativePath),
+            appURL.appendingPathComponent("Contents/Library/LaunchAgents/\(plistName)")
+        ] {
+            guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else {
+                return nil
+            }
+            fingerprint.update(data: Data(SHA256.hash(data: data)))
+        }
+        return fingerprint.finalize()
             .map { String(format: "%02x", $0) }
             .joined()
     }
