@@ -41,11 +41,11 @@ struct OverviewView: View {
             quotaSection
                 .padding(.top, style == .native ? 14 : 12)
             todaySection
-                .padding(.top, style == .native ? 14 : 13)
-            cycleSection
                 .padding(.top, style == .native ? 14 : 11)
+            cycleSection
+                .padding(.top, style == .native ? 12 : 9)
             navigationRow
-                .padding(.top, style == .native ? 12 : 11)
+                .padding(.top, style == .native ? 12 : 9)
             Spacer(minLength: 0)
             footer
                 .padding(.top, 10)
@@ -271,24 +271,31 @@ struct OverviewView: View {
 
     private var todaySection: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("今日 Token").fontWeight(.medium)
-                Spacer()
-                Button(presentation.todayQuota.summary, action: onShowTrend)
-                    .buttonStyle(.plain)
-                    .foregroundStyle(colors.accent)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                    .help(presentation.todayQuota.help + "\n点击查看最近 7 天。")
-                    .accessibilityLabel(presentation.todayQuota.summary + "，查看最近 7 天")
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: style == .native ? 3 : 2) {
+                    Text("今日 Token")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(colors.secondaryText)
+                        .frame(height: 15.4)
+                    todayTotal
+                        .frame(height: style == .native ? 34.22 : 31.86)
+                }
+                Spacer(minLength: 0)
+                Button(action: onShowTrend) {
+                    VStack(alignment: .trailing, spacing: style == .native ? 3 : 2) {
+                        Text("当日额度消耗")
+                            .font(.system(size: 10))
+                            .foregroundStyle(colors.secondaryText)
+                            .frame(height: 15.4)
+                        todayQuotaValue
+                            .frame(height: style == .native ? 34.22 : 31.86)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(presentation.todayQuota.help + "\n点击查看最近 7 天。")
+                .accessibilityLabel(presentation.todayQuota.summary + "，查看最近 7 天")
             }
-            .font(.system(size: 11))
-            .foregroundStyle(colors.secondaryText)
-            .frame(height: 15.4)
-
-            todayTotal
-                .frame(height: style == .native ? 34.22 : 31.86)
-                .padding(.top, style == .native ? 3 : 2)
 
             GeometryReader { geometry in
                 let available = geometry.size.width - 18
@@ -302,7 +309,7 @@ struct OverviewView: View {
                 }
             }
             .frame(height: 34.6)
-            .padding(.top, style == .native ? 10 : 9)
+            .padding(.top, style == .native ? 10 : 8)
         }
         .padding(.horizontal, style == .orbit ? 13 : 0)
         .padding(.top, style == .orbit ? 11 : 0)
@@ -311,6 +318,39 @@ struct OverviewView: View {
             style == .orbit ? colors.surface : .clear,
             in: RoundedRectangle(cornerRadius: 11)
         )
+    }
+
+    @ViewBuilder
+    private var todayQuotaValue: some View {
+        let quota = presentation.todayQuota
+        if quota.segments.isEmpty {
+            Text(quota.percent == "--" ? "—" : quota.percent)
+                .font(.system(size: 18, weight: .medium))
+                .monospacedDigit()
+                .foregroundStyle(quota.percent == "--" ? colors.secondaryText : colors.accent)
+        } else if quota.segments.count <= 2 {
+            HStack(spacing: 12) {
+                ForEach(quota.segments) { segment in
+                    VStack(alignment: .trailing, spacing: 1) {
+                        Text(segment.label)
+                            .font(.system(size: 9))
+                            .foregroundStyle(colors.secondaryText)
+                        Text(segment.percent == "记录不足" ? "—" : segment.percent)
+                            .font(.system(size: 14, weight: .medium))
+                            .monospacedDigit()
+                            .foregroundStyle(segment.percent == "记录不足" ? colors.secondaryText : colors.accent)
+                    }
+                }
+            }
+        } else {
+            HStack(spacing: 4) {
+                Text("分 \(quota.segments.count) 段")
+                    .font(.system(size: 13, weight: .medium))
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9))
+            }
+            .foregroundStyle(colors.accent)
+        }
     }
 
     private var todayTotal: some View {
@@ -368,21 +408,29 @@ struct OverviewView: View {
                     .frame(height: 15.4)
             }
             Spacer()
-            Text(presentation.currentCycleTokens)
-                .font(.system(size: style == .native ? 20 : 18, weight: .medium))
-                .tracking(-0.5)
-                .monospacedDigit()
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-            Text(presentation.currentCycleQuota)
+            VStack(alignment: .trailing, spacing: 1) {
+                Text(presentation.currentCycleTokens)
+                    .font(.system(size: style == .native ? 20 : 18, weight: .medium))
+                    .tracking(-0.5)
+                    .monospacedDigit()
+                HStack(spacing: 4) {
+                    Text("额度已用")
+                        .foregroundStyle(colors.secondaryText)
+                    Text(presentation.currentCycleQuotaPercent == "--" ? "—" : presentation.currentCycleQuotaPercent)
+                        .monospacedDigit()
+                        .foregroundStyle(colors.secondaryText)
+                }
                 .font(.system(size: 10))
-                .foregroundStyle(colors.secondaryText)
-                .fixedSize()
-                .help("该周期累计已用额度，来自最近一次官方额度记录，可能有刷新延迟。")
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(presentation.currentCycleQuota)
+                .help("该周期累计已用额度，来自最近一次官方额度记录，可能有刷新延迟。— 表示额度记录不足。")
+            }
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
         }
         .padding(.horizontal, style == .native ? 0 : 2)
-        .padding(.top, style == .native ? 12 : 0)
-        .frame(height: style == .native ? 44.8 : 30)
+        .padding(.top, style == .native ? 10 : 0)
+        .frame(height: style == .native ? 46 : 36)
         .overlay(alignment: .top) {
             if style == .native {
                 Rectangle().fill(colors.border).frame(height: 1)

@@ -50,6 +50,7 @@ struct OverviewPresentation: Equatable {
     let currentCycleTokens: String
     let currentCycleStatus: String
     let currentCycleQuota: String
+    let currentCycleQuotaPercent: String
     let staleMessage: String?
     let lastUpdated: String
 
@@ -76,6 +77,7 @@ struct OverviewPresentation: Equatable {
 
         todayQuota = DayQuotaPresentation(day: snapshot.today, timeZone: timeZone)
         currentCycleQuota = UsageFormatters.cycleQuotaUsage(snapshot.currentCycle?.quotaUsedPercent)
+        currentCycleQuotaPercent = UsageFormatters.quotaConsumedPercent(snapshot.currentCycle?.quotaUsedPercent)
         todayTotal = UsageFormatters.tokens(today.totalTokens)
         inputTokens = UsageFormatters.tokens(today.inputTokens)
         cachedInputTokens = UsageFormatters.tokens(today.cachedInputTokens)
@@ -245,6 +247,7 @@ struct CycleEntryPresentation: Equatable, Identifiable {
     let isCurrent: Bool
     let boundaryIsEstimated: Bool
     let quotaUsage: String
+    let quotaPercent: String
 }
 
 struct CycleHistoryPresentation: Equatable {
@@ -287,7 +290,8 @@ struct CycleHistoryPresentation: Equatable {
                 ),
                 isCurrent: item.isCurrent,
                 boundaryIsEstimated: item.cycle.boundaryIsEstimated,
-                quotaUsage: UsageFormatters.cycleQuotaUsage(item.cycle.quotaUsedPercent)
+                quotaUsage: UsageFormatters.cycleQuotaUsage(item.cycle.quotaUsedPercent),
+                quotaPercent: UsageFormatters.quotaConsumedPercent(item.cycle.quotaUsedPercent)
             )
         }
     }
