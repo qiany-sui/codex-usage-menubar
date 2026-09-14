@@ -99,7 +99,8 @@ public struct UsageReconciler: Sendable {
                 displayedTokens: day.displayedTokens,
                 status: day.status,
                 quotaConsumedPercent: consumption.percent,
-                quotaSegments: consumption.segments
+                quotaSegments: consumption.segments,
+                recordedQuotaConsumedPercent: consumption.recordedPercent
             )
         }
 
@@ -142,24 +143,29 @@ public struct UsageReconciler: Sendable {
         now: Date,
         calendar: Calendar,
         observations: [QuotaSnapshot]
-    ) -> (percent: Double?, segments: [QuotaConsumptionSegment]?) {
+    ) -> (percent: Double?, segments: [QuotaConsumptionSegment]?, recordedPercent: Double?) {
         guard let start = calendar.date(from: DateComponents(
             year: day.day.year, month: day.day.month, day: day.day.day
         )), let nextDay = calendar.date(byAdding: .day, value: 1, to: start)
-        else { return (nil, nil) }
+        else { return (nil, nil, nil) }
         let end = min(nextDay, now)
         let resets = Set(observations.filter(isUsableQuota).map(\.startsAt))
         let boundaries = [start] + resets.filter { start < $0 && $0 < end }.sorted() + [end]
         let segments = zip(boundaries, boundaries.dropFirst()).map { from, to in
-            QuotaConsumptionSegment(
+            let complete = consumedPercent(
+                from: from, to: to,
+                startsWithReset: resets.contains(from),
+                endsWithReset: resets.contains(to),
+                observations: observations
+            )
+            return QuotaConsumptionSegment(
                 startsAt: from, endsAt: to,
-                consumedPercent: consumedPercent(
-                    from: from, to: to,
-                    startsWithReset: resets.contains(from),
-                    endsWithReset: resets.contains(to),
+                consumedPercent: complete,
+                startsWithReset: resets.contains(from),
+                recordedConsumedPercent: complete == nil ? recordedConsumedPercent(
+                    from: from, to: to, startsWithReset: resets.contains(from),
                     observations: observations
-                ),
-                startsWithReset: resets.contains(from)
+                ) : nil
             )
         }
         let values = segments.compactMap(\.consumedPercent)
@@ -167,7 +173,8 @@ public struct UsageReconciler: Sendable {
         let hasReset = segments.contains(where: \.startsWithReset)
         return (
             values.count == segments.count && total.isFinite ? total : nil,
-            hasReset ? segments : nil
+            hasReset ? segments : nil,
+            hasReset ? nil : segments.first?.recordedConsumedPercent
         )
     }
 
@@ -211,6 +218,35 @@ public struct UsageReconciler: Sendable {
             consumed += current.usedPercent - previous.usedPercent
         }
         return consumed.isFinite ? consumed : nil
+    }
+
+    private func recordedConsumedPercent(
+        from start: Date, to end: Date, startsWithReset: Bool,
+        observations: [QuotaSnapshot]
+    ) -> Double? {
+        // 只保留这一段内可确认的增量，不把跨日空档或另一周期的读数算进来。
+        let inRange = observations.filter {
+            start <= $0.fetchedAt && $0.fetchedAt <= end && $0.startsAt <= start
+        }
+        let first: QuotaSnapshot?
+        if startsWithReset, let reading = observations.first(where: { $0.startsAt == start }) {
+            first = QuotaSnapshot(
+                limitID: reading.limitID, usedPercent: 0,
+                windowDurationMinutes: reading.windowDurationMinutes,
+                startsAt: start, resetsAt: reading.resetsAt, fetchedAt: start
+            )
+        } else {
+            first = quotaAtBoundary(start, observations: observations) ?? inRange.first
+        }
+        guard let first, isUsableQuota(first) else { return nil }
+        let readings = [first] + inRange
+        guard let last = readings.last,
+              last.fetchedAt > max(start, first.fetchedAt) else { return nil }
+        for (previous, current) in zip(readings, readings.dropFirst()) {
+            guard isUsableQuota(current), isSameQuotaCycle(first, current),
+                  current.usedPercent >= previous.usedPercent else { return nil }
+        }
+        return last.usedPercent - first.usedPercent
     }
 
     private func quotaAtBoundary(
@@ -258,10 +294,10 @@ public struct UsageReconciler: Sendable {
             && quota.fetchedAt <= quota.resetsAt
     }
 
-    private func cycleQuotaUsedPercent(
+    private func cycleQuotaUsage(
         _ cycle: QuotaCycle, now: Date, observations: [QuotaSnapshot], knownCycleStarts: Set<Date>
-    ) -> Double? {
-        guard !cycle.boundaryIsEstimated, cycle.startsAt <= now else { return nil }
+    ) -> (percent: Double?, lastRecorded: QuotaSnapshot?) {
+        guard !cycle.boundaryIsEstimated, cycle.startsAt <= now else { return (nil, nil) }
         let starts = Set(observations.map(\.startsAt))
         let matchingStart: Date
         if starts.contains(cycle.startsAt) {
@@ -272,25 +308,27 @@ public struct UsageReconciler: Sendable {
                 abs($0.timeIntervalSince(cycle.startsAt)) <= 60 && $0 < cycle.endsAt
                     && !knownCycleStarts.contains($0)
             }
-            guard candidates.count == 1, let candidate = candidates.first else { return nil }
+            guard candidates.count == 1, let candidate = candidates.first else { return (nil, nil) }
             matchingStart = candidate
         }
         let readings = observations.filter {
             $0.startsAt == matchingStart && $0.fetchedAt < cycle.endsAt
         }
-        guard let last = readings.last, isUsableQuota(last) else { return nil }
-        if matchingStart != cycle.startsAt, last.fetchedAt < cycle.startsAt { return nil }
+        guard let last = readings.last, isUsableQuota(last) else { return (nil, nil) }
+        if matchingStart != cycle.startsAt, last.fetchedAt < cycle.startsAt { return (nil, nil) }
         if now < cycle.endsAt {
-            guard observations.last?.startsAt == matchingStart else { return nil }
+            guard observations.last?.startsAt == matchingStart else { return (nil, nil) }
         } else {
-            guard cycle.endsAt.timeIntervalSince(last.fetchedAt) <= 600 else { return nil }
             // 先清零、后更新重置时间时，旧周期的末条 0 不能当成完整周期消耗。
             for (previous, current) in zip(readings, readings.dropFirst()) {
                 guard isUsableQuota(previous), isUsableQuota(current),
-                      current.usedPercent >= previous.usedPercent else { return nil }
+                      current.usedPercent >= previous.usedPercent else { return (nil, nil) }
+            }
+            guard cycle.endsAt.timeIntervalSince(last.fetchedAt) <= 600 else {
+                return (nil, last)
             }
         }
-        return last.usedPercent
+        return (last.usedPercent, nil)
     }
 
     private func aggregateEventsByStoredDay(
@@ -342,7 +380,7 @@ public struct UsageReconciler: Sendable {
         observations: [QuotaSnapshot],
         knownCycleStarts: Set<Date>
     ) -> QuotaCycle {
-        let quotaPercent = cycleQuotaUsedPercent(
+        let quotaUsage = cycleQuotaUsage(
             cycle, now: now, observations: observations, knownCycleStarts: knownCycleStarts
         )
         let cycleEvents = events.filter {
@@ -371,7 +409,8 @@ public struct UsageReconciler: Sendable {
                 displayedTokens: totalTokensClamped(cycle.usage),
                 status: .partiallyCalibrated,
                 boundaryIsEstimated: cycle.boundaryIsEstimated,
-                quotaUsedPercent: quotaPercent
+                quotaUsedPercent: quotaUsage.percent,
+                lastRecordedQuota: quotaUsage.lastRecorded
             )
         }
 
@@ -423,7 +462,8 @@ public struct UsageReconciler: Sendable {
             displayedTokens: displayedTokens,
             status: status,
             boundaryIsEstimated: cycle.boundaryIsEstimated,
-            quotaUsedPercent: quotaPercent
+            quotaUsedPercent: quotaUsage.percent,
+            lastRecordedQuota: quotaUsage.lastRecorded
         )
     }
 

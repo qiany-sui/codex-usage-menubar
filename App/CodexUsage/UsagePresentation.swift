@@ -134,6 +134,7 @@ struct TrendQuotaSegmentPresentation: Equatable, Identifiable {
     let id: Date
     let label: String
     let percent: String
+    let isPartial: Bool
 }
 
 struct DayQuotaPresentation: Equatable {
@@ -141,15 +142,18 @@ struct DayQuotaPresentation: Equatable {
     let segments: [TrendQuotaSegmentPresentation]
     let resetLabel: String?
     let help: String
+    let isPartial: Bool
 
     var summary: String {
         if segments.isEmpty {
+            if isPartial { return "已记录消耗 " + percent + "（记录不完整）" }
             return percent == "--" ? "额度记录不足" : "额度消耗 " + percent
         }
+        let values = segments.map { ($0.isPartial ? "已记录 " : "") + $0.percent }
         if segments.count > 2 {
-            return "分\(segments.count)段：" + segments.map(\.percent).joined(separator: " / ")
+            return "分\(segments.count)段：" + values.joined(separator: " / ")
         }
-        return segments.map { $0.label + " " + $0.percent }.joined(separator: " · ")
+        return zip(segments, values).map { $0.label + " " + $1 }.joined(separator: " · ")
     }
 
     init(day: UsageDay, timeZone: TimeZone) {
@@ -177,20 +181,27 @@ struct DayQuotaPresentation: Equatable {
             return TrendQuotaSegmentPresentation(
                 id: segment.startsAt,
                 label: label,
-                percent: segment.consumedPercent.map { UsageFormatters.quotaConsumedPercent($0) }
-                    ?? "记录不足"
+                percent: (segment.consumedPercent ?? segment.recordedConsumedPercent)
+                    .map { UsageFormatters.quotaConsumedPercent($0) } ?? "记录不足",
+                isPartial: segment.consumedPercent == nil && segment.recordedConsumedPercent != nil
             )
         }
         resetLabel = resets.count == 1
             ? time.string(from: resets[0].startsAt) + " 重置"
             : resets.isEmpty ? nil : "重置 \(resets.count) 次"
-        help = parts.isEmpty
-            ? "当天官方已用额度的增量；-- 表示边界记录不足。Token 校准状态不代表额度记录完整。"
+        isPartial = parts.isEmpty
+            ? day.quotaConsumedPercent == nil && day.recordedQuotaConsumedPercent != nil
+            : parts.contains(where: \.isPartial)
+        help = (parts.isEmpty
+            ? "当天官方已用额度的增量；-- 表示无可确认的消耗记录。Token 校准状态不代表额度记录完整。"
             : zip(rawSegments, parts).map { segment, part in
-                "\(preciseTime.string(from: segment.startsAt))–\(preciseTime.string(from: segment.endsAt)) \(part.label)：\(part.percent)"
-            }.joined(separator: "\n") + "\n每段按各自周期额度计算；Token 为全天总量。"
+                "\(preciseTime.string(from: segment.startsAt))–\(preciseTime.string(from: segment.endsAt)) \(part.label)：\(part.isPartial ? "已记录 " : "")\(part.percent)"
+            }.joined(separator: "\n") + "\n每段按各自周期额度计算；Token 为全天总量。")
+            + (isPartial ? "\n记录不完整：已记录消耗仅包含可确认的增量，不代表整个时间段的最终消耗。" : "")
         segments = parts
-        percent = parts.isEmpty ? UsageFormatters.quotaConsumedPercent(day.quotaConsumedPercent) : "已分段"
+        percent = parts.isEmpty ? UsageFormatters.quotaConsumedPercent(
+            day.quotaConsumedPercent ?? day.recordedQuotaConsumedPercent
+        ) : "已分段"
     }
 }
 
@@ -207,6 +218,7 @@ struct TrendDayPresentation: Equatable, Identifiable {
     let quotaSegments: [TrendQuotaSegmentPresentation]
     let resetLabel: String?
     let quotaHelp: String
+    let quotaIsPartial: Bool
 }
 
 struct TrendPresentation: Equatable {
@@ -229,7 +241,8 @@ struct TrendPresentation: Equatable {
                 quotaPercent: quota.percent,
                 quotaSegments: quota.segments,
                 resetLabel: quota.resetLabel,
-                quotaHelp: quota.help
+                quotaHelp: quota.help,
+                quotaIsPartial: quota.isPartial
             )
         }
         totalTokens = days.reduce(0) { $0 + $1.tokens }
@@ -248,6 +261,8 @@ struct CycleEntryPresentation: Equatable, Identifiable {
     let boundaryIsEstimated: Bool
     let quotaUsage: String
     let quotaPercent: String
+    let quotaIsPartial: Bool
+    let quotaHelp: String
 }
 
 struct CycleHistoryPresentation: Equatable {
@@ -275,7 +290,10 @@ struct CycleHistoryPresentation: Equatable {
         }
 
         entries = cycles.map { item in
-            CycleEntryPresentation(
+            let recorded = item.cycle.quotaUsedPercent == nil && !item.isCurrent
+                ? item.cycle.lastRecordedQuota : nil
+            let percent = UsageFormatters.quotaConsumedPercent(item.cycle.quotaUsedPercent ?? recorded?.usedPercent)
+            return CycleEntryPresentation(
                 id: item.cycle.startsAt,
                 range: UsageFormatters.cycleRange(
                     startsAt: item.cycle.startsAt,
@@ -290,8 +308,16 @@ struct CycleHistoryPresentation: Equatable {
                 ),
                 isCurrent: item.isCurrent,
                 boundaryIsEstimated: item.cycle.boundaryIsEstimated,
-                quotaUsage: UsageFormatters.cycleQuotaUsage(item.cycle.quotaUsedPercent),
-                quotaPercent: UsageFormatters.quotaConsumedPercent(item.cycle.quotaUsedPercent)
+                quotaUsage: recorded != nil ? "最后记录 " + percent + "（记录不完整）"
+                    : UsageFormatters.cycleQuotaUsage(item.cycle.quotaUsedPercent),
+                quotaPercent: percent,
+                quotaIsPartial: recorded != nil,
+                quotaHelp: recorded.map {
+                    "最后记录于 " + UsageFormatters.dateTime($0.fetchedAt, timeZone: timeZone)
+                        + "：" + percent + "。记录不完整，周期结束时的最终已用额度未知。"
+                } ?? (item.isCurrent
+                    ? "当前周期累计已用额度，来自最近一次官方额度记录。— 表示额度记录不足。"
+                    : "该周期结束前 10 分钟内的最后一条官方额度记录。边界为估算或读数异常时不推算百分比；Token 校准状态单独判断。")
             )
         }
     }

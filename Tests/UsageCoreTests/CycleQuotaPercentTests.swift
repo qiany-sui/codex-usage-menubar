@@ -39,7 +39,11 @@ final class CycleQuotaPercentTests: XCTestCase {
             ],
             cycles: [cycle("2026-09-08T10:31:40+08:00", "2026-09-09T16:28:52+08:00")]
         )
-        XCTAssertNil(try percent(XCTUnwrap(snapshot.cycleHistory.first)))
+        let historical = try XCTUnwrap(snapshot.cycleHistory.first)
+        XCTAssertNil(try percent(historical))
+        let recorded = try XCTUnwrap(lastRecordedQuota(historical))
+        XCTAssertEqual(recorded.usedPercent, 70)
+        XCTAssertEqual(recorded.fetchedAt, try date("2026-09-09T15:00:00+08:00"))
     }
 
     func testEstimatedCycleDoesNotAcquireAnOfficialPercentage() throws {
@@ -48,6 +52,7 @@ final class CycleQuotaPercentTests: XCTestCase {
             cycles: [cycle("2026-09-02T16:28:52+08:00", "2026-09-09T16:28:52+08:00", estimated: true)]
         )
         XCTAssertNil(try percent(XCTUnwrap(snapshot.cycleHistory.first)))
+        XCTAssertNil(try lastRecordedQuota(XCTUnwrap(snapshot.cycleHistory.first)))
     }
 
     func testAsynchronousResetClearingDoesNotTurnTheOldCycleIntoZeroUsage() throws {
@@ -61,6 +66,7 @@ final class CycleQuotaPercentTests: XCTestCase {
             cycles: [cycle("2026-09-08T10:31:40+08:00", "2026-09-09T16:28:52+08:00")]
         )
         XCTAssertNil(try percent(XCTUnwrap(snapshot.cycleHistory.first)))
+        XCTAssertNil(try lastRecordedQuota(XCTUnwrap(snapshot.cycleHistory.first)))
     }
 
     func testNearbyRealCyclesDoNotBorrowEachOthersPercentages() throws {
@@ -111,6 +117,12 @@ final class CycleQuotaPercentTests: XCTestCase {
         )
         XCTAssertEqual(try percent(XCTUnwrap(snapshot.cycleHistory.last)), 5)
         XCTAssertNil(try percent(XCTUnwrap(snapshot.cycleHistory.first)))
+        XCTAssertNil(try lastRecordedQuota(XCTUnwrap(snapshot.cycleHistory.first)))
+    }
+
+    private func lastRecordedQuota(_ cycle: QuotaCycle) throws -> QuotaSnapshot? {
+        struct Output: Decodable { let lastRecordedQuota: QuotaSnapshot? }
+        return try JSONDecoder().decode(Output.self, from: JSONEncoder().encode(cycle)).lastRecordedQuota
     }
 
     private func percent(_ cycle: QuotaCycle) throws -> Double? {

@@ -131,6 +131,70 @@ final class UsagePresentationTests: XCTestCase {
         }
     }
 
+    func testPartialDailyConsumptionIsLabeledInTrendAndOverview() throws {
+        let base = try sampleSnapshot()
+        let day = UsageDay(
+            day: base.today.day, localUsage: base.today.localUsage,
+            officialTokens: nil, displayedTokens: 210_000_000, status: .calibrated,
+            recordedQuotaConsumedPercent: 18
+        )
+        let snapshot = UsageSnapshot(
+            quota: base.quota, today: day, currentCycle: base.currentCycle,
+            recentDays: [day], cycleHistory: [], lastUpdatedAt: base.lastUpdatedAt, status: base.status
+        )
+        let trend = TrendPresentation(snapshot: snapshot, timeZone: timeZone)
+        XCTAssertEqual(trend.days.first?.quotaPercent, "18%")
+        XCTAssertTrue(trend.days.first?.quotaHelp.contains("记录不完整") == true)
+        XCTAssertEqual(trend.days.first?.statusLabel, "已校准")
+        let overview = OverviewPresentation(snapshot: snapshot, now: base.lastUpdatedAt, timeZone: timeZone)
+        XCTAssertEqual(overview.todayQuota.summary, "已记录消耗 18%（记录不完整）")
+    }
+
+    func testPartialResetSegmentRetainsItsLabelAndKnownValue() throws {
+        let base = try sampleSnapshot()
+        let start = base.lastUpdatedAt.addingTimeInterval(-3600)
+        let reset = start.addingTimeInterval(1800)
+        let day = UsageDay(
+            day: base.today.day, localUsage: .zero, officialTokens: nil,
+            displayedTokens: 0, status: .localLive,
+            quotaSegments: [
+                QuotaConsumptionSegment(startsAt: start, endsAt: reset, consumedPercent: nil,
+                    startsWithReset: false, recordedConsumedPercent: 15),
+                QuotaConsumptionSegment(startsAt: reset, endsAt: base.lastUpdatedAt,
+                    consumedPercent: 20, startsWithReset: true)
+            ]
+        )
+        let quota = DayQuotaPresentation(day: day, timeZone: timeZone)
+        XCTAssertEqual(quota.segments.map(\.percent), ["15%", "20%"])
+        XCTAssertTrue(quota.summary.contains("重置前 已记录 15%"))
+        XCTAssertTrue(quota.help.contains("记录不完整"))
+    }
+
+    func testHistoricalPartialQuotaShowsLastRecordedValueAndTimestamp() throws {
+        let base = try sampleSnapshot()
+        let old = try XCTUnwrap(base.cycleHistory.first)
+        let recordedAt = try fixedDate("2026-09-11T15:09:56Z")
+        let record = QuotaSnapshot(
+            limitID: "codex", usedPercent: 76, windowDurationMinutes: 10_080,
+            startsAt: old.startsAt, resetsAt: old.endsAt, fetchedAt: recordedAt
+        )
+        let partial = QuotaCycle(
+            startsAt: old.startsAt, endsAt: old.endsAt, usage: old.usage,
+            displayedTokens: old.displayedTokens, status: old.status,
+            boundaryIsEstimated: false, lastRecordedQuota: record
+        )
+        let snapshot = UsageSnapshot(
+            quota: base.quota, today: base.today, currentCycle: base.currentCycle,
+            recentDays: base.recentDays, cycleHistory: [partial],
+            lastUpdatedAt: base.lastUpdatedAt, status: base.status
+        )
+        let entry = try XCTUnwrap(CycleHistoryPresentation(snapshot: snapshot, timeZone: timeZone).entries.last)
+        XCTAssertEqual(entry.quotaPercent, "76%")
+        XCTAssertEqual(entry.quotaUsage, "最后记录 76%（记录不完整）")
+        XCTAssertTrue(entry.quotaIsPartial)
+        XCTAssertTrue(entry.quotaHelp.contains("9/11 23:09"))
+    }
+
     func testOverviewMapsQuotaCycleAndStaleState() throws {
         let presentation = OverviewPresentation(
             snapshot: try sampleSnapshot(status: .stale),

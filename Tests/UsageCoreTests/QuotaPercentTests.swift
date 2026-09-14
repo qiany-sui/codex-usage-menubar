@@ -275,6 +275,60 @@ final class QuotaPercentTests: XCTestCase {
         XCTAssertEqual(parts.map(\.startsWithReset), [true])
     }
 
+    func testIncompleteDayKeepsRecordedConsumptionWithoutClaimingTheDayIsComplete() throws {
+        let snapshot = try makeSnapshot([
+            quota(58, at: "2026-09-07T23:12:42+08:00"),
+            quota(58, at: "2026-09-08T10:05:52+08:00"),
+            quota(76, at: "2026-09-08T23:09:56+08:00"),
+            quota(0, at: "2026-09-09T11:00:00+08:00", start: "2026-09-09T11:00:00+08:00")
+        ])
+        let day = snapshot.recentDays[5]
+        XCTAssertNil(day.quotaConsumedPercent)
+        XCTAssertEqual(try recordedPercent(day), 18)
+    }
+
+    func testPartialConsumptionUsesOnlyRecordedChangesWithinTheDay() throws {
+        let snapshot = try makeSnapshot([
+            quota(30, at: "2026-09-08T19:00:00+08:00"),
+            quota(58, at: "2026-09-09T10:00:00+08:00"),
+            quota(76, at: "2026-09-09T11:00:00+08:00")
+        ])
+        XCTAssertNil(snapshot.today.quotaConsumedPercent)
+        XCTAssertEqual(try recordedPercent(snapshot.today), 18)
+    }
+
+    func testSingleReadingAndCounterCorrectionDoNotBecomePartialConsumption() throws {
+        let histories = try [
+            [quota(76, at: "2026-09-09T11:00:00+08:00")],
+            [quota(76, at: "2026-09-09T10:00:00+08:00"),
+             quota(0, at: "2026-09-09T11:00:00+08:00")]
+        ]
+        for history in histories {
+            XCTAssertNil(try recordedPercent(makeSnapshot(history).today))
+        }
+    }
+
+    func testPartialResetSegmentKeepsObservedConsumptionInItsOwnCycle() throws {
+        let snapshot = try makeSnapshot([
+            quota(30, at: "2026-09-08T23:58:00+08:00"),
+            quota(45, at: "2026-09-09T03:00:00+08:00"),
+            quota(20, at: "2026-09-09T12:00:00+08:00", start: "2026-09-09T06:00:00+08:00")
+        ])
+        struct Output: Decodable {
+            struct Segment: Decodable { let recordedConsumedPercent: Double? }
+            let quotaSegments: [Segment]
+        }
+        let output = try JSONDecoder().decode(Output.self, from: JSONEncoder().encode(snapshot.today))
+        XCTAssertEqual(output.quotaSegments.map(\.recordedConsumedPercent), [15, nil])
+        XCTAssertEqual(snapshot.today.quotaSegments?.map(\.consumedPercent), [nil, 20])
+        XCTAssertNil(try recordedPercent(snapshot.today))
+    }
+
+    private func recordedPercent(_ day: UsageDay) throws -> Double? {
+        struct Output: Decodable { let recordedQuotaConsumedPercent: Double? }
+        return try JSONDecoder().decode(Output.self, from: JSONEncoder().encode(day)).recordedQuotaConsumedPercent
+    }
+
     private struct QuotaSegmentOutput: Decodable {
         let startsAt: Date
         let endsAt: Date

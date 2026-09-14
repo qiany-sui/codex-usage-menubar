@@ -160,7 +160,7 @@ struct TrendDetailView: View {
                 Spacer(minLength: 8)
                 Text("当日额度消耗")
                     .frame(width: 90, alignment: .trailing)
-                    .help("官方已用额度在当天的增量。发生重置时，各段分别对应各自周期额度；悬停数值可查看时间段。记录不足的分段不推算，也不记作 0。按官方快照统计，可能有刷新延迟。")
+                    .help("官方已用额度在当天的增量。发生重置时，各段分别对应各自周期额度；悬停数值可查看时间段。“已记录消耗”表示记录不完整，仅展示可确认的增量；没有记录时不推算，也不记作 0。按官方快照统计，可能有刷新延迟。")
                 Text("Token 状态").frame(width: 64, alignment: .trailing)
                     .help("仅表示 Token 的校准状态，额度快照是否完整单独判断。")
             }
@@ -199,7 +199,8 @@ struct TrendDetailView: View {
                     }
                     .font(.system(size: 11))
                     .padding(.horizontal, 5)
-                    .frame(height: max(24, CGFloat(day.quotaSegments.count) * 14 + 6))
+                    .frame(height: max(24, CGFloat(day.quotaSegments.count) * 14 + 6
+                        + (day.quotaIsPartial && !day.quotaSegments.isEmpty ? 10 : 0)))
                     .background(day.day == activeDay ? colors.tint : .clear)
                     .clipShape(RoundedRectangle(cornerRadius: 3))
                     .overlay(alignment: .bottom) {
@@ -218,22 +219,35 @@ struct TrendDetailView: View {
     @ViewBuilder
     private func quotaConsumption(_ day: TrendDayPresentation) -> some View {
         if day.quotaSegments.isEmpty {
-            Text(day.quotaPercent)
-                .monospacedDigit()
-                .foregroundStyle(colors.secondaryText)
-                .accessibilityLabel("当日额度消耗 \(day.quotaPercent)")
+            VStack(alignment: .trailing, spacing: 1) {
+                Text(day.quotaIsPartial ? "已记录消耗 " + day.quotaPercent : day.quotaPercent)
+                    .font(.system(size: day.quotaIsPartial ? 9 : 11))
+                    .monospacedDigit()
+                if day.quotaIsPartial {
+                    Text("记录不完整").font(.system(size: 8))
+                }
+            }
+            .foregroundStyle(colors.secondaryText)
+            .accessibilityLabel(day.quotaIsPartial
+                ? "已记录消耗 \(day.quotaPercent)，记录不完整" : "当日额度消耗 \(day.quotaPercent)")
         } else {
             VStack(spacing: 1) {
                 ForEach(day.quotaSegments) { part in
                     HStack(spacing: 4) {
                         Text(part.label)
                         Spacer(minLength: 0)
-                        Text(part.percent).monospacedDigit()
+                        Text(part.isPartial ? "已记录 " + part.percent : part.percent).monospacedDigit()
                     }
                     .font(.system(size: 9))
                     .foregroundStyle(colors.secondaryText)
                     .frame(height: 13)
                     .accessibilityElement(children: .combine)
+                }
+                if day.quotaIsPartial {
+                    Text("记录不完整")
+                        .font(.system(size: 8))
+                        .foregroundStyle(colors.secondaryText)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
                 }
             }
         }

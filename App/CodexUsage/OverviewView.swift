@@ -324,15 +324,22 @@ struct OverviewView: View {
     private var todayQuotaValue: some View {
         let quota = presentation.todayQuota
         if quota.segments.isEmpty {
-            Text(quota.percent == "--" ? "—" : quota.percent)
-                .font(.system(size: 18, weight: .medium))
-                .monospacedDigit()
-                .foregroundStyle(quota.percent == "--" ? colors.secondaryText : colors.accent)
+            VStack(alignment: .trailing, spacing: 1) {
+                Text(quota.percent == "--" ? "—" : quota.percent)
+                    .font(.system(size: 18, weight: .medium))
+                    .monospacedDigit()
+                    .foregroundStyle(quota.percent == "--" ? colors.secondaryText : colors.accent)
+                if quota.isPartial {
+                    Text("已记录 · 记录不完整")
+                        .font(.system(size: 8))
+                        .foregroundStyle(colors.secondaryText)
+                }
+            }
         } else if quota.segments.count <= 2 {
             HStack(spacing: 12) {
                 ForEach(quota.segments) { segment in
                     VStack(alignment: .trailing, spacing: 1) {
-                        Text(segment.label)
+                        Text(segment.label + (segment.isPartial ? " · 已记录" : ""))
                             .font(.system(size: 9))
                             .foregroundStyle(colors.secondaryText)
                         Text(segment.percent == "记录不足" ? "—" : segment.percent)

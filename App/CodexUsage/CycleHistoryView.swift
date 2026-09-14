@@ -36,7 +36,7 @@ struct CycleHistoryView: View {
                         }
                     }
 
-                    Text("— 表示额度记录不足")
+                    Text("最后记录表示记录不完整；— 表示额度记录不足")
                         .font(.system(size: 9))
                         .foregroundStyle(colors.secondaryText)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -110,15 +110,20 @@ struct CycleHistoryView: View {
                 .monospacedDigit()
                 .frame(width: 74, alignment: .trailing)
 
-            Text(entry.quotaPercent == "--" ? "—" : entry.quotaPercent)
-                .font(.system(size: 12, weight: .medium))
-                .monospacedDigit()
-                .foregroundStyle(entry.isCurrent ? colors.accent : colors.secondaryText)
-                .frame(width: 64, alignment: .trailing)
-                .accessibilityLabel(entry.quotaUsage)
-                .help(entry.isCurrent
-                    ? "当前周期累计已用额度，来自最近一次官方额度记录。— 表示额度记录不足。"
-                    : "该周期结束前 10 分钟内的最后一条官方额度记录。记录不足或边界为估算时不推算百分比；Token 校准状态单独判断。")
+            VStack(alignment: .trailing, spacing: 1) {
+                Text(entry.quotaIsPartial ? "最后记录 " + entry.quotaPercent
+                    : entry.quotaPercent == "--" ? "—" : entry.quotaPercent)
+                    .font(.system(size: entry.quotaIsPartial ? 10 : 12, weight: .medium))
+                    .monospacedDigit()
+                if entry.quotaIsPartial {
+                    Text("记录不完整").font(.system(size: 8))
+                }
+            }
+            .foregroundStyle(entry.isCurrent ? colors.accent : colors.secondaryText)
+            .frame(width: 64, alignment: .trailing)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(entry.quotaUsage)
+            .help(entry.quotaHelp)
         }
         .lineLimit(1)
         .minimumScaleFactor(0.85)
