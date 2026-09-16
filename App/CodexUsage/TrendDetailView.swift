@@ -268,7 +268,7 @@ struct TrendDetailView: View {
         presentation: TrendPresentation(snapshot: UsagePreviewData.fullSnapshot),
         onBack: {}
     )
-    .modifier(UsagePopoverSurface(style: .native))
+    .modifier(UsagePopoverSurface(style: .aurora))
     .preferredColorScheme(.dark)
 }
 #endif

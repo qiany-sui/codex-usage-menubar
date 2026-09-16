@@ -161,7 +161,7 @@ struct CycleHistoryView: View {
         ),
         onBack: {}
     )
-    .modifier(UsagePopoverSurface(style: .native))
+    .modifier(UsagePopoverSurface(style: .aurora))
     .preferredColorScheme(.dark)
 }
 #endif

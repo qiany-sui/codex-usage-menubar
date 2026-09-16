@@ -31,7 +31,7 @@ final class ProjectSmokeTests: XCTestCase {
     func testAppMetadataMatchesMenuBarDelivery() {
         XCTAssertEqual(
             AppMetadata.popoverSize,
-            CGSize(width: 380, height: 440)
+            CGSize(width: 360, height: 440)
         )
         XCTAssertEqual(AppMetadata.applicationName, "Codex Usage")
     }
@@ -78,8 +78,6 @@ final class ProjectSmokeTests: XCTestCase {
 
     func testApprovedPalettesAdaptToAppearance() throws {
         let cases: [(UsageStyle, NSAppearance.Name, UInt32, UInt32)] = [
-            (.native, .aqua, 0xf6f7f9, 0x2868c7),
-            (.native, .darkAqua, 0x232428, 0x81b2ff),
             (.orbit, .aqua, 0xf5f4f8, 0x7952b8),
             (.orbit, .darkAqua, 0x222127, 0xbb9de9)
         ]

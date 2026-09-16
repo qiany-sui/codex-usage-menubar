@@ -4,7 +4,7 @@ import UsageCore
 
 struct UsagePopoverView: View {
     @ObservedObject var viewModel: UsageViewModel
-    @AppStorage(UsageStyle.storageKey) var style: UsageStyle = .native
+    @AppStorage(UsageStyle.storageKey) var style: UsageStyle = .aurora
 
     private let now: () -> Date
     private let timeZone: TimeZone
@@ -16,8 +16,11 @@ struct UsagePopoverView: View {
         styleDefaults: UserDefaults = .standard
     ) {
         self.viewModel = viewModel
+        if styleDefaults.string(forKey: UsageStyle.storageKey) == "native" {
+            styleDefaults.set(UsageStyle.aurora.rawValue, forKey: UsageStyle.storageKey)
+        }
         _style = AppStorage(
-            wrappedValue: .native,
+            wrappedValue: .aurora,
             UsageStyle.storageKey,
             store: styleDefaults
         )

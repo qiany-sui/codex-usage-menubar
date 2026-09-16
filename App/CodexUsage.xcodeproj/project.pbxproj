@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		C50000000000000000000001 /* UsageStyleViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = C50000000000000000000011 /* UsageStyleViews.swift */; };
 		A00000000000000000000040 /* CodexUsageApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000030 /* CodexUsageApp.swift */; };
 		A00000000000000000000041 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000032 /* Assets.xcassets */; };
 		A00000000000000000000042 /* UsageCore in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000091 /* UsageCore */; };
@@ -86,6 +87,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		C50000000000000000000011 /* UsageStyleViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageStyleViews.swift; sourceTree = "<group>"; };
 		A00000000000000000000020 /* Codex Usage.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Codex Usage.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		A00000000000000000000021 /* CodexUsageTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CodexUsageTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A00000000000000000000030 /* CodexUsageApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexUsageApp.swift; sourceTree = "<group>"; };
@@ -165,6 +167,7 @@
 				B00000000000000000000021 /* UsagePresentation.swift */,
 				B00000000000000000000022 /* UsagePopoverView.swift */,
 				B00000000000000000000023 /* OverviewView.swift */,
+				C50000000000000000000011 /* UsageStyleViews.swift */,
 				B00000000000000000000024 /* TrendDetailView.swift */,
 				B00000000000000000000025 /* CycleHistoryView.swift */,
 				A00000000000000000000035 /* UsageFormatters.swift */,
@@ -375,6 +378,7 @@
 				B00000000000000000000011 /* UsagePresentation.swift in Sources */,
 				B00000000000000000000012 /* UsagePopoverView.swift in Sources */,
 				B00000000000000000000013 /* OverviewView.swift in Sources */,
+				C50000000000000000000001 /* UsageStyleViews.swift in Sources */,
 				B00000000000000000000014 /* TrendDetailView.swift in Sources */,
 				B00000000000000000000015 /* CycleHistoryView.swift in Sources */,
 				A00000000000000000000046 /* UsageFormatters.swift in Sources */,

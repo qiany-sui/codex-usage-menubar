@@ -31,17 +31,17 @@ enum RecordedRefreshReason: Equatable, Hashable, Sendable {
 
 @MainActor
 final class UsageViewModelTests: XCTestCase {
-    func testPopoverDefaultsToNativeStyleWithoutSavedPreference() {
+    func testPopoverDefaultsToAuroraStyleWithoutSavedPreference() {
         let defaults = isolatedStyleDefaults()
         let popover = UsagePopoverView(
             viewModel: ViewModelFixture().viewModel,
             styleDefaults: defaults
         )
 
-        XCTAssertEqual(popover.style, .native)
+        XCTAssertEqual(popover.style, .aurora)
     }
 
-    func testPopoverFallsBackToNativeForUnknownSavedStyle() {
+    func testPopoverFallsBackToAuroraForUnknownSavedStyle() {
         let defaults = isolatedStyleDefaults()
         defaults.set("removed-style", forKey: "interfaceStyle")
         let popover = UsagePopoverView(
@@ -49,7 +49,7 @@ final class UsageViewModelTests: XCTestCase {
             styleDefaults: defaults
         )
 
-        XCTAssertEqual(popover.style, .native)
+        XCTAssertEqual(popover.style, .aurora)
     }
 
     func testPopoverRestoresStyleAfterRecreation() {
@@ -68,13 +68,49 @@ final class UsageViewModelTests: XCTestCase {
         )
         XCTAssertEqual(restored.style, .orbit)
 
-        restored.style = .native
+        restored.style = .aurora
         let restoredAgain = UsagePopoverView(
             viewModel: fixture.viewModel,
             styleDefaults: defaults
         )
-        XCTAssertEqual(restoredAgain.style, .native)
-        XCTAssertEqual(defaults.string(forKey: "interfaceStyle"), "native")
+        XCTAssertEqual(restoredAgain.style, .aurora)
+        XCTAssertEqual(defaults.string(forKey: "interfaceStyle"), "aurora")
+    }
+
+    func testPopoverRestoresAndSavesApprovedNewStyles() {
+        for rawValue in ["neon", "aurora"] {
+            let defaults = isolatedStyleDefaults()
+            defaults.set(rawValue, forKey: "interfaceStyle")
+            let fixture = ViewModelFixture()
+            let popover = UsagePopoverView(
+                viewModel: fixture.viewModel,
+                styleDefaults: defaults
+            )
+
+            XCTAssertEqual(popover.style.rawValue, rawValue)
+            let selected = popover.style
+            popover.style = .aurora
+            popover.style = selected
+            let restored = UsagePopoverView(
+                viewModel: fixture.viewModel,
+                styleDefaults: defaults
+            )
+            XCTAssertEqual(restored.style.rawValue, rawValue)
+            XCTAssertEqual(defaults.string(forKey: "interfaceStyle"), rawValue)
+        }
+    }
+
+    func testRemovedNativePreferenceMigratesToAurora() {
+        let defaults = isolatedStyleDefaults()
+        defaults.set("native", forKey: UsageStyle.storageKey)
+        let popover = UsagePopoverView(
+            viewModel: ViewModelFixture().viewModel,
+            styleDefaults: defaults
+        )
+
+        XCTAssertEqual(popover.style, .aurora)
+        XCTAssertEqual(defaults.string(forKey: UsageStyle.storageKey), "aurora")
+        XCTAssertFalse(UsageStyle.allCases.contains { $0.rawValue == "native" })
     }
 
     private func isolatedStyleDefaults() -> UserDefaults {
