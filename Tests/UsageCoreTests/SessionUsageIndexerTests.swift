@@ -216,6 +216,88 @@ final class SessionUsageIndexerTests: XCTestCase {
         ])
     }
 
+    func testUnchangedFilesAvoidSnapshotReadsAndDatabaseWrites() async throws {
+        for suffix in ["\n", "\nunfinished"] {
+            let root = try temporaryCodexHome()
+            let session = root.appendingPathComponent("sessions/unchanged.jsonl")
+            let reads = root.appendingPathComponent("snapshot-reads")
+            try Data().write(to: reads)
+            try Data((tokenLine(
+                timestamp: "2026-08-31T01:00:00Z", input: 10, cached: 5, output: 2
+            ) + suffix).utf8).write(to: session)
+            let databaseURL = try temporaryDatabaseURL()
+            let store = try SQLiteUsageStore(databaseURL: databaseURL)
+            try await store.migrate()
+            let indexer = SessionUsageIndexer(store: store, beforeSnapshotRead: { _ in
+                let handle = try FileHandle(forWritingTo: reads)
+                defer { try? handle.close() }
+                try handle.seekToEnd()
+                try handle.write(contentsOf: Data([1]))
+            })
+            let calendar = Calendar(identifier: .gregorian)
+            let first = try await indexer.index(
+                codexHome: root, modifiedSince: .distantPast, calendar: calendar
+            )
+            let fixture = try SQLiteConnection(databaseURL: databaseURL)
+            try fixture.execute(
+                """
+                CREATE TABLE cursor_writes (value INTEGER);
+                CREATE TRIGGER record_cursor_write AFTER UPDATE ON file_cursors
+                BEGIN INSERT INTO cursor_writes VALUES (1); END;
+                """,
+                operation: "test fixture"
+            )
+
+            let second = try await indexer.index(
+                codexHome: root, modifiedSince: .distantPast, calendar: calendar
+            )
+
+            XCTAssertEqual(first.insertedEventCount, 1)
+            XCTAssertEqual(second.scannedFileCount, 1)
+            XCTAssertEqual(second.insertedEventCount, 0)
+            XCTAssertEqual(try Data(contentsOf: reads).count, 1)
+            let statement = try fixture.prepare(
+                "SELECT COUNT(*) FROM cursor_writes;", operation: "read test writes"
+            )
+            XCTAssertEqual(try statement.step(), .row)
+            XCTAssertEqual(try statement.int64(at: 0), 0)
+            try await store.close()
+        }
+    }
+
+    func testFailedIngestDoesNotCacheFileAsIndexed() async throws {
+        let root = try temporaryCodexHome()
+        let session = root.appendingPathComponent("sessions/retry.jsonl")
+        try Data((tokenLine(
+            timestamp: "2026-08-31T01:00:00Z", input: 10, cached: 5, output: 2
+        ) + "\n").utf8).write(to: session)
+        let databaseURL = try temporaryDatabaseURL()
+        let store = try SQLiteUsageStore(databaseURL: databaseURL)
+        try await store.migrate()
+        let fixture = try SQLiteConnection(databaseURL: databaseURL)
+        try fixture.execute(
+            """
+            CREATE TRIGGER reject_ingest BEFORE INSERT ON file_cursors
+            BEGIN SELECT RAISE(ABORT, 'reject ingest'); END;
+            """,
+            operation: "test fixture"
+        )
+        let indexer = SessionUsageIndexer(store: store)
+        let calendar = Calendar(identifier: .gregorian)
+        await XCTAssertThrowsErrorAsync(try await indexer.index(
+            codexHome: root, modifiedSince: .distantPast, calendar: calendar
+        )) { XCTAssertNotNil($0 as? SQLiteStoreError) }
+        try fixture.execute("DROP TRIGGER reject_ingest;", operation: "test fixture")
+
+        let retry = try await indexer.index(
+            codexHome: root, modifiedSince: .distantPast, calendar: calendar
+        )
+        let events = try await store.events(from: .distantPast, to: .distantFuture)
+        XCTAssertEqual(retry.insertedEventCount, 1)
+        XCTAssertEqual(events.count, 1)
+        try await store.close()
+    }
+
     func testTruncatedFileRestartsAtZeroWithoutLosingNewEvent() async throws {
         let root = try temporaryCodexHome()
         let session = root

@@ -152,6 +152,47 @@ final class SessionLineParserTests: XCTestCase {
         }
     }
 
+    func testAlternatingTimestampFormatsPreserveExistingPrecision() throws {
+        let parser = SessionLineParser()
+        let timestamps = [
+            "2026-08-31T01:02:03.123456Z",
+            "2026-08-31T09:02:03+08:00",
+            "2026-08-31T01:02:03.000Z",
+            "2026-08-30T20:02:03-05:00"
+        ]
+        for timestamp in timestamps {
+            let record = try XCTUnwrap(parser.parse(line: Data(tokenLine(
+                timestamp: timestamp, input: 10, cached: 5, output: 2
+            ).utf8)))
+            XCTAssertEqual(record.occurredAt, try date(timestamp))
+        }
+    }
+
+    func testIgnoresUnrelatedEventWithInvalidTimestampAndTokenInfo() throws {
+        let line = Data(
+            #"{"timestamp":42,"type":"event_msg","payload":{"type":"user_message","info":"not-token-info"}}"#.utf8
+        )
+        XCTAssertNil(try SessionLineParser().parse(line: line))
+    }
+
+    func testSharedParserSupportsConcurrentTimestampFormats() async throws {
+        let parser = SessionLineParser()
+        let timestamps = ["2026-08-31T01:02:03.123Z", "2026-08-31T01:02:03Z"]
+        let lines = timestamps.map {
+            Data(tokenLine(timestamp: $0, input: 10, cached: 5, output: 2).utf8)
+        }
+        let expected = try timestamps.map(date)
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for index in 0..<100 {
+                group.addTask {
+                    let record = try XCTUnwrap(parser.parse(line: lines[index % 2]))
+                    XCTAssertEqual(record.occurredAt, expected[index % 2])
+                }
+            }
+            try await group.waitForAll()
+        }
+    }
+
     private func tokenEventLine(
         usageKey: String,
         overriding field: String,

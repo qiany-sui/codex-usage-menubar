@@ -1,23 +1,11 @@
 import Foundation
 
 public struct SessionLineParser: Sendable {
+    private let timestamps = SessionTimestampParser()
+
     public init() {}
 
     public func parse(line: Data) throws -> SessionTokenRecord? {
-        let routing: SessionRoutingEnvelope
-        do {
-            routing = try JSONDecoder().decode(
-                SessionRoutingEnvelope.self,
-                from: line
-            )
-        } catch {
-            throw SessionParseError.invalidTokenEvent
-        }
-
-        guard routing.type == "event_msg",
-              routing.payload?.type == "token_count" else {
-            return nil
-        }
         let tokenEvent: SessionTokenEnvelope
         do {
             tokenEvent = try JSONDecoder().decode(
@@ -27,8 +15,11 @@ public struct SessionLineParser: Sendable {
         } catch {
             throw SessionParseError.invalidTokenEvent
         }
+        guard tokenEvent.isTokenEvent else {
+            return nil
+        }
         guard let timestamp = tokenEvent.timestamp,
-              let occurredAt = parseTimestamp(timestamp) else {
+              let occurredAt = timestamps.parse(timestamp) else {
             throw SessionParseError.invalidTokenEvent
         }
 
@@ -65,16 +56,6 @@ public struct SessionLineParser: Sendable {
         )
     }
 
-    private func parseTimestamp(_ timestamp: String) -> Date? {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = formatter.date(from: timestamp) {
-            return date
-        }
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter.date(from: timestamp)
-    }
-
     private func schemaVariant(
         lastUsage: TokenBreakdown?,
         totalUsage: TokenBreakdown?
@@ -102,8 +83,27 @@ private struct SessionRoutingEnvelope: Decodable {
 }
 
 private struct SessionTokenEnvelope: Decodable {
+    let isTokenEvent: Bool
     let timestamp: String?
     let payload: Payload?
+
+    private enum CodingKeys: String, CodingKey {
+        case timestamp, payload
+    }
+
+    init(from decoder: any Decoder) throws {
+        let routing = try SessionRoutingEnvelope(from: decoder)
+        isTokenEvent = routing.type == "event_msg" && routing.payload?.type == "token_count"
+        guard isTokenEvent else {
+            timestamp = nil
+            payload = nil
+            return
+        }
+        // 共用一次 JSON 解码，仍先分流，避免解析无关消息的正文或 token 字段。
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        timestamp = try container.decodeIfPresent(String.self, forKey: .timestamp)
+        payload = try container.decodeIfPresent(Payload.self, forKey: .payload)
+    }
 
     struct Payload: Decodable {
         let info: Info?
@@ -131,5 +131,23 @@ private struct SessionTokenEnvelope: Decodable {
             case outputTokens = "output_tokens"
             case reasoningOutputTokens = "reasoning_output_tokens"
         }
+    }
+}
+
+// 格式化器只初始化一次；锁保护共享访问，保持解析器的 Sendable 契约。
+private final class SessionTimestampParser: @unchecked Sendable {
+    private let lock = NSLock()
+    private let fractional = ISO8601DateFormatter()
+    private let wholeSeconds = ISO8601DateFormatter()
+
+    init() {
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        wholeSeconds.formatOptions = [.withInternetDateTime]
+    }
+
+    func parse(_ timestamp: String) -> Date? {
+        lock.lock()
+        defer { lock.unlock() }
+        return fractional.date(from: timestamp) ?? wholeSeconds.date(from: timestamp)
     }
 }

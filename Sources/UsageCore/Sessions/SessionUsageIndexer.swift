@@ -24,6 +24,7 @@ public actor SessionUsageIndexer {
     private let parser = SessionLineParser()
     private let scanner = SessionFileScanner()
     private let beforeSnapshotRead: (@Sendable (URL) throws -> Void)?
+    private var indexedSnapshots: [URL: FileSnapshot] = [:]
 
     public init(store: any UsageStore) {
         self.store = store
@@ -47,6 +48,8 @@ public actor SessionUsageIndexer {
             in: codexHome,
             modifiedSince: modifiedSince
         )
+        let currentFiles = Set(files)
+        indexedSnapshots = indexedSnapshots.filter { currentFiles.contains($0.key) }
         var insertedEventCount = 0
         for file in files {
             insertedEventCount += try await index(file: file, calendar: calendar)
@@ -59,15 +62,19 @@ public actor SessionUsageIndexer {
 
     private func index(file: URL, calendar: Calendar) async throws -> Int {
         let standardized = file.standardizedFileURL
-        let pathHash = Data(
-            SHA256.hash(data: Data(standardized.path.utf8))
-        )
-        let existingCursor = try await store.cursor(for: pathHash)
         let opened = try openRegularFile(at: standardized)
         defer {
             try? opened.handle.close()
         }
 
+        // 仅复用成功入库的快照；含未完成末行的文件也等内容变化后再读。
+        if indexedSnapshots[standardized] == opened.snapshot {
+            return 0
+        }
+        let pathHash = Data(
+            SHA256.hash(data: Data(standardized.path.utf8))
+        )
+        let existingCursor = try await store.cursor(for: pathHash)
         let canResume = existingCursor?.deviceID == opened.snapshot.deviceID
             && existingCursor?.inode == opened.snapshot.inode
             && (existingCursor?.committedOffset ?? -1) >= 0
@@ -179,7 +186,9 @@ public actor SessionUsageIndexer {
         guard try snapshot(of: opened.handle) == opened.snapshot else {
             return 0
         }
-        return try await store.ingest(events: events, cursor: cursor)
+        let inserted = try await store.ingest(events: events, cursor: cursor)
+        indexedSnapshots[standardized] = opened.snapshot
+        return inserted
     }
 
     private func openRegularFile(at url: URL) throws -> OpenedFile {
