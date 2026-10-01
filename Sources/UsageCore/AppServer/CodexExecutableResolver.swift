@@ -8,6 +8,10 @@ public struct CodexExecutableResolver: Sendable {
         standardLocations: [URL] = [
             URL(
                 fileURLWithPath:
+                    "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"
+            ),
+            URL(
+                fileURLWithPath:
                     "/Applications/ChatGPT.app/Contents/Resources/codex"
             )
         ]

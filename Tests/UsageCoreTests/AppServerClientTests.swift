@@ -236,6 +236,21 @@ final class AppServerClientTests: XCTestCase {
         )
     }
 
+    func testExecutableResolverFindsInstalledNestedChatGPTCLIWithoutPATH() throws {
+        let bundledCLI = URL(fileURLWithPath:
+            "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"
+        )
+        try XCTSkipUnless(
+            FileManager.default.isExecutableFile(atPath: bundledCLI.path),
+            "本机未安装包含嵌套 CodexCLI 的 ChatGPT，跳过安装布局集成测试。"
+        )
+
+        XCTAssertEqual(
+            CodexExecutableResolver().resolve(environment: ["PATH": ""]),
+            bundledCLI
+        )
+    }
+
     func testExecutableResolverSkipsDirectoriesAndNonExecutableFiles() throws {
         let root = try temporaryDirectory()
         temporaryDirectories.append(root)
