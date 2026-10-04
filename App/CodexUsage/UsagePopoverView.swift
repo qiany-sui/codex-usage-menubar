@@ -5,6 +5,7 @@ import UsageCore
 struct UsagePopoverView: View {
     @ObservedObject var viewModel: UsageViewModel
     @AppStorage(UsageStyle.storageKey) var style: UsageStyle = .aurora
+    @State private var isRetrying = false
 
     private let now: () -> Date
     private let timeZone: TimeZone
@@ -30,6 +31,17 @@ struct UsagePopoverView: View {
 
     var body: some View {
         stateContent
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay(alignment: .bottomTrailing) {
+                if viewModel.snapshot == nil || viewModel.fatalErrorMessage != nil
+                    || viewModel.isInitialLoading || isRetrying {
+                    Button("退出") { NSApplication.shared.terminate(nil) }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 11))
+                        .accessibilityLabel("退出 Codex Usage")
+                        .padding(18)
+                }
+            }
             .modifier(UsagePopoverSurface(
                 style: style,
                 isLowQuota: (viewModel.snapshot?.quota?.remainingPercent ?? 100) <= 10
@@ -38,21 +50,25 @@ struct UsagePopoverView: View {
 
     @ViewBuilder
     private var stateContent: some View {
-        if viewModel.fatalErrorMessage != nil {
-            FatalUsageState {
-                Task { await viewModel.retryFatalError() }
+        if viewModel.fatalErrorMessage != nil || isRetrying {
+            FatalUsageState(isRetrying: isRetrying) {
+                isRetrying = true
+                Task {
+                    await viewModel.retryFatalError()
+                    isRetrying = false
+                }
             }
         } else if viewModel.isInitialLoading {
             LoadingUsageState()
         } else if viewModel.needsCodexHomeSelection,
                   viewModel.snapshot == nil {
-            CodexHomeSelectionState {
+            CodexHomeSelectionState(message: viewModel.codexHomeSelectionMessage) {
                 Task { await viewModel.chooseCodexHome() }
             }
         } else if let snapshot = viewModel.snapshot {
             routedContent(snapshot: snapshot)
         } else {
-            EmptyUsageState {
+            EmptyUsageState(isRefreshing: viewModel.isRefreshing) {
                 Task { await viewModel.refreshManually() }
             }
         }
@@ -71,6 +87,7 @@ struct UsagePopoverView: View {
                     style: $style,
                     isRefreshing: viewModel.isRefreshing,
                     showsCodexHomeAction: viewModel.needsCodexHomeSelection,
+                    codexHomeSelectionMessage: viewModel.codexHomeSelectionMessage,
                     onRefresh: {
                         Task { await viewModel.refreshManually() }
                     },
@@ -116,6 +133,7 @@ private struct LoadingUsageState: View {
 
 private struct CodexHomeSelectionState: View {
     @Environment(\.usageColors) private var colors
+    let message: String?
     let onChoose: () -> Void
 
     var body: some View {
@@ -132,6 +150,13 @@ private struct CodexHomeSelectionState: View {
                     .multilineTextAlignment(.center)
                     .lineSpacing(2)
             }
+            if let message {
+                Text(message)
+                    .font(.system(size: 12))
+                    .foregroundStyle(colors.warning)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Button("选择 Codex Home", action: onChoose)
                 .buttonStyle(.borderedProminent)
                 .tint(colors.accent)
@@ -143,6 +168,7 @@ private struct CodexHomeSelectionState: View {
 
 private struct FatalUsageState: View {
     @Environment(\.usageColors) private var colors
+    let isRetrying: Bool
     let onRetry: () -> Void
 
     var body: some View {
@@ -159,9 +185,15 @@ private struct FatalUsageState: View {
                     .multilineTextAlignment(.center)
                     .lineSpacing(2)
             }
-            Button("重试", action: onRetry)
+            Button(action: onRetry) {
+                HStack(spacing: 6) {
+                    if isRetrying { ProgressView().controlSize(.small) }
+                    Text(isRetrying ? "正在重试…" : "重试")
+                }
+            }
                 .buttonStyle(.borderedProminent)
                 .tint(colors.accent)
+                .disabled(isRetrying)
                 .accessibilityLabel("重试读取用量")
         }
         .padding(36)
@@ -170,6 +202,7 @@ private struct FatalUsageState: View {
 
 private struct EmptyUsageState: View {
     @Environment(\.usageColors) private var colors
+    let isRefreshing: Bool
     let onRefresh: () -> Void
 
     var body: some View {
@@ -179,8 +212,9 @@ private struct EmptyUsageState: View {
                 .foregroundStyle(colors.secondaryText)
             Text("暂时没有可显示的用量数据")
                 .font(.system(size: 14, weight: .semibold))
-            Button("刷新", action: onRefresh)
+            Button(isRefreshing ? "正在刷新…" : "刷新", action: onRefresh)
                 .buttonStyle(.bordered)
+                .disabled(isRefreshing)
                 .accessibilityLabel("刷新用量")
         }
     }

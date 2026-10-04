@@ -149,6 +149,7 @@ private actor TransportLineMailbox {
 public actor ProcessJSONLTransport: AppServerTransport {
     private let executableURL: URL
     private let arguments: [String]
+    private let environment: [String: String]?
     private let outputLifecycle = ProcessOutputLifecycle()
     private let mailbox = TransportLineMailbox()
 
@@ -159,9 +160,14 @@ public actor ProcessJSONLTransport: AppServerTransport {
     private var didStart = false
     private var didStop = false
 
-    public init(executableURL: URL, arguments: [String] = []) {
+    public init(
+        executableURL: URL,
+        arguments: [String] = [],
+        environment: [String: String]? = nil
+    ) {
         self.executableURL = executableURL
         self.arguments = arguments
+        self.environment = environment
     }
 
     public func start() async throws {
@@ -173,6 +179,7 @@ public actor ProcessJSONLTransport: AppServerTransport {
         let outputPipe = Pipe()
         process.executableURL = executableURL
         process.arguments = arguments
+        process.environment = environment
         process.standardInput = inputPipe
         process.standardOutput = outputPipe
         process.standardError = FileHandle.nullDevice

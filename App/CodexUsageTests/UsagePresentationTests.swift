@@ -7,6 +7,22 @@ import XCTest
 final class UsagePresentationTests: XCTestCase {
     private let timeZone = TimeZone(identifier: "Asia/Shanghai")!
 
+    func testStaleMenuBarPreservesQuotaAndExplainsItsTimestamp() throws {
+        let presentation = MenuBarPresentation(
+            remainingPercent: 62, isFatal: false, isStale: true,
+            lastUpdatedAt: try fixedDate("2026-10-04T01:30:00Z"),
+            timeZone: timeZone
+        )
+        XCTAssertEqual(presentation.title, "62%")
+        XCTAssertTrue(presentation.isStale)
+        XCTAssertTrue(presentation.accessibilityLabel.contains("已过期"))
+        XCTAssertTrue(presentation.help.contains("10/4 09:30"))
+
+        let fatal = MenuBarPresentation(remainingPercent: 62, isFatal: true, isStale: true)
+        XCTAssertEqual(fatal.icon, .fatal)
+        XCTAssertFalse(fatal.isStale)
+    }
+
     func testMenuBarPresentationUsesBrandedQuotaIconStateAndSeparateText() {
         let normal = MenuBarPresentation(
             remainingPercent: 62,

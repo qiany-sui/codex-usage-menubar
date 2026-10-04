@@ -88,23 +88,24 @@ struct AppContainer: UsageRuntimeBuilding {
             withIntermediateDirectories: true
         )
         let store = try SQLiteUsageStore(databaseURL: databaseURL)
+        var runtimeEnvironment = environment
+        if let codexHome {
+            runtimeEnvironment["CODEX_HOME"] = codexHome
+                .standardizedFileURL.path
+        }
 
         let transport: any AppServerTransport
         if let executableURL {
             transport = ProcessJSONLTransport(
                 executableURL: executableURL,
-                arguments: ["app-server"]
+                arguments: ["app-server"],
+                environment: runtimeEnvironment
             )
         } else {
             transport = UnavailableAppServerTransport()
         }
         let client = CodexAppServerClient(transport: transport)
         let indexer = SessionUsageIndexer(store: store)
-        var runtimeEnvironment = environment
-        if let codexHome {
-            runtimeEnvironment["CODEX_HOME"] = codexHome
-                .standardizedFileURL.path
-        }
         let service = UsageService(
             accountClient: client,
             indexer: indexer,

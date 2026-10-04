@@ -412,6 +412,33 @@ actor ParkedNotificationAccountClient: AccountUsageReading {
     }
 }
 
+private final class NotificationTestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Date
+    private var reads = 0
+
+    init(_ value: Date) { self.value = value }
+
+    func read() -> Date {
+        lock.lock()
+        defer { lock.unlock() }
+        reads += 1
+        return value
+    }
+
+    func advance(to value: Date) {
+        lock.lock()
+        defer { lock.unlock() }
+        self.value = value
+    }
+
+    var readCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return reads
+    }
+}
+
 struct ServiceFixture {
     let service: UsageService
     let store: SQLiteUsageStore
@@ -676,7 +703,7 @@ final class UsageServiceTests: XCTestCase {
         ])
         let first = Task {
             try await service.processNextAccountNotification(
-                now: baselineNow.addingTimeInterval(1)
+                now: { baselineNow.addingTimeInterval(1) }
             )
         }
         await client.waitUntilNotificationStarts()
@@ -684,7 +711,7 @@ final class UsageServiceTests: XCTestCase {
         let second = Task {
             secondLaunched.fulfill()
             return try await service.processNextAccountNotification(
-                now: baselineNow.addingTimeInterval(2)
+                now: { baselineNow.addingTimeInterval(2) }
             )
         }
         await fulfillment(of: [secondLaunched], timeout: 1)
@@ -725,7 +752,7 @@ final class UsageServiceTests: XCTestCase {
             codexHome: codexHome
         )
         let notification = Task {
-            try await service.processNextAccountNotification(now: baselineNow)
+            try await service.processNextAccountNotification(now: { baselineNow })
         }
         await client.waitUntilNotificationStarts()
 
@@ -759,6 +786,74 @@ final class UsageServiceTests: XCTestCase {
         _ = try await refresh.value
         _ = try await current.value
         _ = try await notification.value
+    }
+
+    func testParkedNotificationUsesClockAtDeliveryForQuotaAndRefreshState() async throws {
+        let fixture = try makeParkedNotificationFixture()
+        let baseline = now
+        let deliveredAt = baseline.addingTimeInterval(3_600)
+        let clock = NotificationTestClock(baseline)
+        _ = try await fixture.service.refresh(reason: .startup, now: baseline)
+        let notification = Task {
+            try await fixture.service.processNextAccountNotification(now: { clock.read() })
+        }
+        await fixture.client.waitUntilNotificationStarts()
+        clock.advance(to: deliveredAt)
+        await fixture.client.enqueue(.rateLimitsUpdated(try rateLimitUpdate(usedPercent: 31)))
+
+        let snapshot = try await notification.value
+        let quota = try await fixture.store.latestQuota()
+        let state = try await fixture.store.refreshState()
+        XCTAssertEqual(snapshot?.quota?.fetchedAt, deliveredAt)
+        XCTAssertEqual(snapshot?.lastUpdatedAt, deliveredAt)
+        XCTAssertEqual(quota?.fetchedAt, deliveredAt)
+        XCTAssertEqual(state.lastSuccessfulQuotaRefreshAt, deliveredAt)
+        XCTAssertEqual(clock.readCount, 1)
+    }
+
+    func testParkedNotificationAfterNewerRefreshBecomesLatestQuota() async throws {
+        let fixture = try makeParkedNotificationFixture()
+        let baseline = now
+        let refreshedAt = baseline.addingTimeInterval(1_800)
+        let deliveredAt = baseline.addingTimeInterval(3_600)
+        let clock = NotificationTestClock(baseline)
+        _ = try await fixture.service.refresh(reason: .startup, now: baseline)
+        let notification = Task {
+            try await fixture.service.processNextAccountNotification(now: { clock.read() })
+        }
+        await fixture.client.waitUntilNotificationStarts()
+        _ = try await fixture.service.refresh(reason: .manual, now: refreshedAt)
+        clock.advance(to: deliveredAt)
+        await fixture.client.enqueue(.rateLimitsUpdated(try rateLimitUpdate(usedPercent: 42)))
+
+        let snapshot = try await notification.value
+        let quota = try await fixture.store.latestQuota()
+        let state = try await fixture.store.refreshState()
+        XCTAssertEqual(snapshot?.quota?.remainingPercent, 58)
+        XCTAssertEqual(quota?.remainingPercent, 58)
+        XCTAssertEqual(quota?.fetchedAt, deliveredAt)
+        XCTAssertEqual(state.lastSuccessfulQuotaRefreshAt, deliveredAt)
+    }
+
+    func testParkedNotificationAcrossMidnightBuildsNewDay() async throws {
+        let fixture = try makeParkedNotificationFixture()
+        let beforeMidnight = try date("2026-08-31T23:59:30Z")
+        let afterMidnight = try date("2026-09-01T00:00:30Z")
+        let clock = NotificationTestClock(beforeMidnight)
+        _ = try await fixture.service.refresh(reason: .startup, now: beforeMidnight)
+        let event = storedEvent(at: afterMidnight, input: 80, output: 8)
+        _ = try await fixture.store.insert(events: [event])
+        let notification = Task {
+            try await fixture.service.processNextAccountNotification(now: { clock.read() })
+        }
+        await fixture.client.waitUntilNotificationStarts()
+        clock.advance(to: afterMidnight)
+        await fixture.client.enqueue(.rateLimitsUpdated(try rateLimitUpdate(usedPercent: 31)))
+
+        let snapshot = try await notification.value
+        XCTAssertEqual(snapshot?.today.day, LocalDay(year: 2026, month: 9, day: 1))
+        XCTAssertEqual(snapshot?.today.displayedTokens, 88)
+        XCTAssertEqual(snapshot?.quota?.fetchedAt, afterMidnight)
     }
 
     func testRefreshPersistsRemoteDataIndexesSessionsAndBuildsSnapshot() async throws {
@@ -1107,7 +1202,7 @@ final class UsageServiceTests: XCTestCase {
         await fixture.accountClient.enqueue(.rateLimitsUpdated(update))
 
         let snapshot = try await fixture.service.processNextAccountNotification(
-            now: now.addingTimeInterval(5)
+            now: { [now] in now.addingTimeInterval(5) }
         )
 
         XCTAssertEqual(snapshot?.quota?.remainingPercent, 69)
@@ -1121,7 +1216,7 @@ final class UsageServiceTests: XCTestCase {
         )
 
         let snapshot = try await fixture.service.processNextAccountNotification(
-            now: now
+            now: { [now] in now }
         )
         let counts = await fixture.accountClient.callCounts()
 
@@ -1135,7 +1230,7 @@ final class UsageServiceTests: XCTestCase {
         await fixture.accountClient.setInitializeError(rpcFailure())
 
         let snapshot = try await fixture.service
-            .processNextAccountNotification(now: now)
+            .processNextAccountNotification(now: { [now] in now })
         let counts = await fixture.accountClient.callCounts()
 
         XCTAssertNil(snapshot)
@@ -1166,7 +1261,7 @@ final class UsageServiceTests: XCTestCase {
         )
 
         let snapshot = try await fixture.service.processNextAccountNotification(
-            now: now.addingTimeInterval(1)
+            now: { [now] in now.addingTimeInterval(1) }
         )
 
         XCTAssertEqual(snapshot?.quota?.remainingPercent, 60)
@@ -1182,7 +1277,7 @@ final class UsageServiceTests: XCTestCase {
         )
 
         let snapshot = try await fixture.service.processNextAccountNotification(
-            now: now.addingTimeInterval(1)
+            now: { [now] in now.addingTimeInterval(1) }
         )
 
         XCTAssertEqual(snapshot?.quota?.remainingPercent, 75)
@@ -1200,10 +1295,10 @@ final class UsageServiceTests: XCTestCase {
         )
 
         _ = try await fixture.service.processNextAccountNotification(
-            now: now.addingTimeInterval(1)
+            now: { [now] in now.addingTimeInterval(1) }
         )
         let second = try await fixture.service.processNextAccountNotification(
-            now: now.addingTimeInterval(2)
+            now: { [now] in now.addingTimeInterval(2) }
         )
 
         XCTAssertEqual(second?.quota?.remainingPercent, 58)
@@ -1642,7 +1737,7 @@ final class UsageServiceTests: XCTestCase {
         await client.setInitializeError(nil)
 
         let notification = try await service.processNextAccountNotification(
-            now: now.addingTimeInterval(30)
+            now: { [now] in now.addingTimeInterval(30) }
         )
         let recovered = try await service.refresh(
             reason: .scheduled,
@@ -1652,6 +1747,47 @@ final class UsageServiceTests: XCTestCase {
         XCTAssertNil(notification)
         XCTAssertEqual(failed.status, .stale)
         XCTAssertNotEqual(recovered.status, .stale)
+    }
+
+    func testShortRetainedCyclesKeepRecentSevenDaysAcrossSnapshots() async throws {
+        let fixture = try await ServiceFixture.make()
+        try await fixture.store.migrate()
+        let firstRecentDay = try date("2026-08-25T00:00:00Z")
+        let recentEvent = storedEvent(at: firstRecentDay, input: 70, output: 7)
+        let oldEvent = storedEvent(at: firstRecentDay.addingTimeInterval(-1), input: 10, output: 1)
+        _ = try await fixture.store.insert(events: [oldEvent, recentEvent])
+        try await fixture.store.upsert(officialDays: [
+            OfficialUsageDay(day: LocalDay(year: 2026, month: 8, day: 24), tokens: 100, fetchedAt: now),
+            OfficialUsageDay(day: LocalDay(year: 2026, month: 8, day: 25), tokens: 700, fetchedAt: now)
+        ])
+        // 多次真实重置可让九个周额度周期的起点落在最近七天内。
+        let earliestStart = try date("2026-08-28T00:00:00Z")
+        let spacing = TimeInterval(8 * 60 * 60)
+        let cycles = (0..<8).map { index in
+            let start = earliestStart.addingTimeInterval(Double(index) * spacing)
+            return QuotaCycle(
+                startsAt: start, endsAt: start.addingTimeInterval(spacing),
+                usage: .zero, displayedTokens: 0, status: .localLive,
+                boundaryIsEstimated: false
+            )
+        }
+        try await fixture.store.replace(cycles: cycles)
+
+        let first = try await fixture.service.refresh(reason: .startup, now: now)
+        let second = try await fixture.service.refresh(reason: .manual, now: now.addingTimeInterval(60))
+        let savedEvents = try await fixture.store.events(from: .distantPast, to: .distantFuture)
+        let savedDays = try await fixture.store.officialDays()
+        let savedCycles = try await fixture.store.cycles()
+
+        XCTAssertEqual(savedCycles.count, 9)
+        XCTAssertEqual(savedCycles.first?.startsAt, earliestStart)
+        XCTAssertEqual(first.recentDays.first?.localUsage.inputTokens, 70)
+        XCTAssertEqual(first.recentDays.first?.displayedTokens, 700)
+        XCTAssertEqual(second.recentDays.first?.localUsage.inputTokens, 70)
+        XCTAssertEqual(second.recentDays.first?.displayedTokens, 700)
+        XCTAssertTrue(savedEvents.contains(recentEvent))
+        XCTAssertFalse(savedEvents.contains(oldEvent))
+        XCTAssertEqual(savedDays.map(\.day), [LocalDay(year: 2026, month: 8, day: 25), LocalDay(year: 2026, month: 8, day: 30)])
     }
 
     func testNineRetainedCyclesPruneOnlyUsageBeforeEarliestCycle() async throws {
@@ -1824,7 +1960,7 @@ final class UsageServiceTests: XCTestCase {
         let fixture = try await ServiceFixture.make()
         await fixture.accountClient.enqueue(.other(method: "thread/started"))
         let snapshot = try await fixture.service.processNextAccountNotification(
-            now: now
+            now: { [now] in now }
         )
 
         XCTAssertNil(snapshot)
@@ -1948,6 +2084,24 @@ final class UsageServiceTests: XCTestCase {
 
         XCTAssertFalse(acceptedCallback)
         XCTAssertFalse(acceptedFinish)
+    }
+
+    private func makeParkedNotificationFixture() throws -> (
+        service: UsageService, store: SQLiteUsageStore, client: ParkedNotificationAccountClient
+    ) {
+        let codexHome = try temporaryCodexHome()
+        let store = try SQLiteUsageStore(databaseURL: try temporaryDatabaseURL())
+        let client = ParkedNotificationAccountClient(
+            initialized: InitializeResult(
+                codexHome: codexHome.path, platformFamily: "unix",
+                platformOs: "macos", userAgent: "test"
+            ),
+            limits: ServiceFixture.fullLimits, usage: ServiceFixture.fullUsage
+        )
+        return (
+            makeService(accountClient: client, indexer: CountingSessionIndexer(), store: store, codexHome: codexHome),
+            store, client
+        )
     }
 
     private func makeService(

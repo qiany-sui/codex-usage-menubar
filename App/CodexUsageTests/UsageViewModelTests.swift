@@ -147,6 +147,9 @@ final class UsageViewModelTests: XCTestCase {
         XCTAssertEqual(fixture.viewModel.snapshot, snapshot)
         XCTAssertTrue(fixture.viewModel.isStale)
         XCTAssertNil(fixture.viewModel.fatalErrorMessage)
+        XCTAssertEqual(fixture.viewModel.menuBarTitle, "62%")
+        XCTAssertTrue(fixture.viewModel.menuBarPresentation.isStale)
+        XCTAssertTrue(fixture.viewModel.menuBarPresentation.accessibilityLabel.contains("已过期"))
         await fixture.viewModel.stop()
     }
 
@@ -176,6 +179,68 @@ final class UsageViewModelTests: XCTestCase {
         await fixture.viewModel.start()
         await fixture.viewModel.openPopover()
 
+        XCTAssertTrue(fixture.viewModel.needsCodexHomeSelection)
+        XCTAssertEqual(fixture.chooser.callCount, 1)
+        await fixture.viewModel.stop()
+    }
+
+    func testMissingHomeWithStaleSnapshotKeepsRecoveryAfterCancellation() async throws {
+        let snapshot = try sampleSnapshot(status: .stale)
+        let fixture = ViewModelFixture(snapshot: snapshot, resolvedHome: nil)
+
+        await fixture.viewModel.start()
+        await fixture.viewModel.openPopover()
+
+        XCTAssertEqual(fixture.viewModel.snapshot, snapshot)
+        XCTAssertTrue(fixture.viewModel.needsCodexHomeSelection)
+        XCTAssertEqual(fixture.chooser.callCount, 1)
+        await fixture.viewModel.stop()
+    }
+
+    func testRealServiceMissingHomeReturnsStaleSnapshotAndStillOffersRecovery() async throws {
+        let root = try temporaryAppDirectory()
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let chooser = FakeCodexHomeChooser(result: nil)
+        let sleeper = ControlledSleeper()
+        let viewModel = UsageViewModel(
+            runtimeBuilder: AppContainer(
+                applicationSupport: root,
+                homeDirectory: root,
+                environment: [:],
+                executableURL: nil,
+                calendar: utcCalendar()
+            ),
+            bookmarkStore: FakeBookmarkStore(),
+            chooseCodexHome: { await chooser.choose() },
+            environment: UsageViewModelEnvironment(
+                now: { Date(timeIntervalSince1970: 1788249600) },
+                sleep: { try await sleeper.sleep(for: $0) },
+                schedulerInterval: .seconds(60)
+            )
+        )
+
+        await viewModel.start()
+        await viewModel.openPopover()
+
+        XCTAssertNotNil(viewModel.snapshot)
+        XCTAssertTrue(viewModel.isStale)
+        XCTAssertTrue(viewModel.needsCodexHomeSelection)
+        XCTAssertEqual(chooser.callCount, 1)
+        await viewModel.stop()
+    }
+
+    func testRestoredHomeThatDisappearedOffersRecoveryWithSavedSnapshot() async throws {
+        let oldHome = try trackedValidCodexHome()
+        try FileManager.default.removeItem(at: oldHome)
+        let fixture = ViewModelFixture(
+            snapshot: try sampleSnapshot(status: .stale),
+            resolvedHome: nil
+        )
+        fixture.bookmarkStore.restoreResult = .available(oldHome)
+
+        await fixture.viewModel.start()
+
+        XCTAssertNotNil(fixture.viewModel.snapshot)
         XCTAssertTrue(fixture.viewModel.needsCodexHomeSelection)
         XCTAssertEqual(fixture.chooser.callCount, 1)
         await fixture.viewModel.stop()
@@ -346,6 +411,27 @@ final class UsageViewModelTests: XCTestCase {
         await fixture.viewModel.stop()
     }
 
+    func testParkedNotificationReadsClockWhenItArrives() async throws {
+        let initial = try fixedDate("2026-09-01T08:00:00Z")
+        let received = try fixedDate("2026-09-01T09:00:00Z")
+        let clock = LockedViewModelClock(initial)
+        let updated = try sampleSnapshot(remainingPercent: 48)
+        let fixture = ViewModelFixture(
+            snapshot: try sampleSnapshot(),
+            now: { clock.now() }
+        )
+        await fixture.viewModel.start()
+        await fixture.waitUntilNotificationCallCount(1)
+
+        clock.set(received)
+        await fixture.service.enqueueNotification(updated)
+        await fixture.waitUntilSnapshotEquals(updated)
+
+        let dates = await fixture.service.notificationDates()
+        XCTAssertEqual(dates, [received])
+        await fixture.viewModel.stop()
+    }
+
     func testStaleNotificationKeepsConsumingWithoutReconnect() async throws {
         let stale = try sampleSnapshot(
             status: .stale,
@@ -472,6 +558,42 @@ final class UsageViewModelTests: XCTestCase {
             for: .seconds(60)
         )
         XCTAssertEqual(schedulerCount, 1)
+        await fixture.viewModel.stop()
+    }
+
+    func testInvalidDirectorySelectionExplainsRequiredStructureWithoutReplacingRuntime() async throws {
+        let invalidHome = try temporaryAppDirectory()
+        addTeardownBlock { try? FileManager.default.removeItem(at: invalidHome) }
+        let fixture = ViewModelFixture(
+            snapshot: try sampleSnapshot(),
+            chosenHome: invalidHome
+        )
+        await fixture.viewModel.start()
+
+        await fixture.viewModel.chooseCodexHome()
+
+        XCTAssertTrue(fixture.viewModel.needsCodexHomeSelection)
+        XCTAssertTrue(fixture.viewModel.codexHomeSelectionMessage?.contains("sessions") == true)
+        XCTAssertTrue(fixture.bookmarkStore.savedURLs.isEmpty)
+        XCTAssertEqual(fixture.runtimeBuilder.buildCount, 1)
+        await fixture.viewModel.stop()
+    }
+
+    func testBookmarkSaveFailureExplainsAuthorizationProblemAndKeepsExistingSnapshot() async throws {
+        let snapshot = try sampleSnapshot()
+        let fixture = ViewModelFixture(
+            snapshot: snapshot,
+            chosenHome: try trackedValidCodexHome()
+        )
+        fixture.bookmarkStore.saveError = CodexHomeBookmarkError.bookmarkCreationFailed
+        await fixture.viewModel.start()
+
+        await fixture.viewModel.chooseCodexHome()
+
+        XCTAssertTrue(fixture.viewModel.needsCodexHomeSelection)
+        XCTAssertTrue(fixture.viewModel.codexHomeSelectionMessage?.contains("授权") == true)
+        XCTAssertEqual(fixture.viewModel.snapshot, snapshot)
+        XCTAssertEqual(fixture.runtimeBuilder.buildCount, 1)
         await fixture.viewModel.stop()
     }
 
@@ -751,6 +873,7 @@ private actor FakeUsageService: UsageServicing {
     private var pending: [RecordedRefreshReason: [CheckedContinuation<UsageSnapshot, Error>]] = [:]
     private var reasonWaiters: [ReasonWaiter] = []
     private var notificationCallCount = 0
+    private var recordedNotificationDates: [Date] = []
 
     init(
         defaultOutcome: FakeRefreshOutcome,
@@ -789,8 +912,7 @@ private actor FakeUsageService: UsageServicing {
         }
     }
 
-    func processNextAccountNotification(now: Date) async throws -> UsageSnapshot? {
-        _ = now
+    func processNextAccountNotification(now: @Sendable () -> Date) async throws -> UsageSnapshot? {
         notificationCallCount += 1
         if everyNotificationEnds {
             return nil
@@ -801,6 +923,7 @@ private actor FakeUsageService: UsageServicing {
             }
             switch event {
             case let .snapshot(snapshot):
+                recordedNotificationDates.append(now())
                 return snapshot
             case .end:
                 return nil
@@ -831,6 +954,10 @@ private actor FakeUsageService: UsageServicing {
 
     func notificationCalls() -> Int {
         notificationCallCount
+    }
+
+    func notificationDates() -> [Date] {
+        recordedNotificationDates
     }
 
     func waitForReason(_ value: RecordedRefreshReason) async {
@@ -1089,6 +1216,7 @@ private final class FakeRuntimeBuilder: UsageRuntimeBuilding {
 @MainActor
 private final class FakeBookmarkStore: CodexHomeBookmarkStoring {
     var restoreResult: CodexHomeBookmarkRestoreResult = .needsSelection
+    var saveError: (any Error)?
     private(set) var savedURLs: [URL] = []
     private(set) var releaseCount = 0
 
@@ -1097,6 +1225,9 @@ private final class FakeBookmarkStore: CodexHomeBookmarkStoring {
     }
 
     func save(_ url: URL) throws {
+        if let saveError {
+            throw saveError
+        }
         savedURLs.append(url)
         restoreResult = .available(url.standardizedFileURL)
     }
@@ -1168,13 +1299,16 @@ private final class ViewModelFixture {
         snapshot: UsageSnapshot? = nil,
         refreshError: (any Error)? = nil,
         resolvedHome: URL? = URL(
-            fileURLWithPath: "/tmp/fake-codex-home",
+            fileURLWithPath: "/private/tmp",
             isDirectory: true
         ),
         chosenHome: URL? = nil,
         notificationResults: [UsageSnapshot?] = [],
         everyNotificationEnds: Bool = false,
-        schedulerInterval: Duration = .seconds(60)
+        schedulerInterval: Duration = .seconds(60),
+        now: @escaping @Sendable () -> Date = {
+            Date(timeIntervalSince1970: 1788249600)
+        }
     ) {
         let outcome: FakeRefreshOutcome
         if let refreshError {
@@ -1205,11 +1339,7 @@ private final class ViewModelFixture {
                 await chooser.choose()
             },
             environment: UsageViewModelEnvironment(
-                now: {
-                    ISO8601DateFormatter().date(
-                        from: "2026-09-01T08:00:00Z"
-                    )!
-                },
+                now: now,
                 sleep: { [sleeper] duration in
                     try await sleeper.sleep(for: duration)
                 },
@@ -1266,6 +1396,27 @@ private final class ViewModelFixture {
             await Task.yield()
         }
         XCTFail("等待目录授权保存超时")
+    }
+}
+
+private final class LockedViewModelClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var date: Date
+
+    init(_ date: Date) {
+        self.date = date
+    }
+
+    func now() -> Date {
+        lock.lock()
+        defer { lock.unlock() }
+        return date
+    }
+
+    func set(_ date: Date) {
+        lock.lock()
+        defer { lock.unlock() }
+        self.date = date
     }
 }
 

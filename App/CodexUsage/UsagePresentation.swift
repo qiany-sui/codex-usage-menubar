@@ -10,8 +10,16 @@ struct MenuBarPresentation: Equatable {
     let icon: MenuBarIconPresentation
     let title: String
     let accessibilityLabel: String
+    let isStale: Bool
+    let help: String
 
-    init(remainingPercent: Double?, isFatal: Bool) {
+    init(
+        remainingPercent: Double?,
+        isFatal: Bool,
+        isStale: Bool = false,
+        lastUpdatedAt: Date? = nil,
+        timeZone: TimeZone = .autoupdatingCurrent
+    ) {
         if isFatal {
             icon = .fatal
         } else {
@@ -25,7 +33,12 @@ struct MenuBarPresentation: Equatable {
             remainingPercent: remainingPercent,
             isFatal: isFatal
         )
+        self.isStale = isStale && !isFatal
         accessibilityLabel = "Codex 周额度 \(title)"
+            + (self.isStale ? "，数据已过期" : "")
+        help = accessibilityLabel + (lastUpdatedAt.map {
+            "\n上次额度更新：" + UsageFormatters.dateTime($0, timeZone: timeZone)
+        } ?? "")
     }
 }
 

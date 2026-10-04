@@ -30,6 +30,7 @@ final class UsageViewModel: ObservableObject {
     @Published private(set) var isInitialLoading = true
     @Published private(set) var isRefreshing = false
     @Published private(set) var needsCodexHomeSelection = false
+    @Published private(set) var codexHomeSelectionMessage: String?
     @Published private(set) var fatalErrorMessage: String?
     @Published private(set) var page: UsagePage = .overview
 
@@ -44,7 +45,9 @@ final class UsageViewModel: ObservableObject {
     var menuBarPresentation: MenuBarPresentation {
         MenuBarPresentation(
             remainingPercent: snapshot?.quota?.remainingPercent,
-            isFatal: fatalErrorMessage != nil
+            isFatal: fatalErrorMessage != nil,
+            isStale: isStale,
+            lastUpdatedAt: snapshot?.quota?.fetchedAt
         )
     }
 
@@ -119,7 +122,14 @@ final class UsageViewModel: ObservableObject {
             return
         }
 
-        guard currentCodexHome == nil, snapshot == nil else {
+        var isDirectory = ObjCBool(false)
+        let hasAvailableHome = currentCodexHome.map {
+            FileManager.default.fileExists(
+                atPath: $0.path,
+                isDirectory: &isDirectory
+            ) && isDirectory.boolValue
+        } ?? false
+        guard !hasAvailableHome else {
             needsCodexHomeSelection = false
             return
         }
@@ -157,6 +167,7 @@ final class UsageViewModel: ObservableObject {
             return
         }
         let chooserGeneration = lifecycleGeneration
+        codexHomeSelectionMessage = nil
         guard let selectedURL = await chooseCodexHomeAction() else {
             guard
                 !didStop,
@@ -176,6 +187,8 @@ final class UsageViewModel: ObservableObject {
         let codexHome = selectedURL.standardizedFileURL
         guard CodexHomeBookmarkStore.isValidCodexHome(codexHome) else {
             needsCodexHomeSelection = true
+            codexHomeSelectionMessage =
+                "所选文件夹不包含 sessions 或 archived_sessions，请选择 Codex Home 文件夹。"
             return
         }
 
@@ -183,6 +196,8 @@ final class UsageViewModel: ObservableObject {
             try bookmarkStore.save(codexHome)
         } catch {
             needsCodexHomeSelection = true
+            codexHomeSelectionMessage =
+                "无法保存所选文件夹的访问授权，请重新选择或重试。"
             return
         }
 
@@ -439,7 +454,7 @@ final class UsageViewModel: ObservableObject {
         while !Task.isCancelled {
             do {
                 let value = try await runtime.service
-                    .processNextAccountNotification(now: environment.now())
+                    .processNextAccountNotification(now: environment.now)
                 guard !Task.isCancelled, self.runtimeID == runtimeID else {
                     return
                 }

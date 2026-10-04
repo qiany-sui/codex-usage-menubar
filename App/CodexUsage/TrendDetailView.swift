@@ -5,6 +5,7 @@ import UsageCore
 struct TrendDetailView: View {
     @Environment(\.usageColors) private var colors
     @State private var selectedDay: LocalDay?
+    @State private var expandedDay: LocalDay?
 
     let presentation: TrendPresentation
     let onBack: () -> Void
@@ -28,13 +29,21 @@ struct TrendDetailView: View {
             header
             summary.padding(.top, hasResets ? 12 : 15)
             chart.padding(.top, 11)
-            ScrollView {
-                dayRows
+            ScrollViewReader { proxy in
+                ScrollView {
+                    dayRows
+                        .padding(.trailing, 14)
+                }
+                .onChange(of: expandedDay) { day in
+                    if let day {
+                        proxy.scrollTo(day, anchor: .top)
+                    }
+                }
             }
             .padding(.top, hasResets ? 8 : 11)
             if hasResets {
                 Text("额度按重置分段；Token 为全天总量。")
-                    .font(.system(size: 9))
+                    .font(.system(size: 11))
                     .foregroundStyle(colors.secondaryText)
                     .padding(.top, 6)
             }
@@ -137,11 +146,12 @@ struct TrendDetailView: View {
                         if let label: String = proxy.value(atX: x),
                            let day = presentation.days.first(where: { $0.label == label }) {
                             selectedDay = day.day
+                            expandedDay = day.day
                         }
                     })
             }
         }
-        .frame(height: hasResets ? 56 : 96)
+        .frame(height: 76)
         .overlay {
             if presentation.days.isEmpty {
                 Text("暂无趋势数据")
@@ -154,101 +164,90 @@ struct TrendDetailView: View {
 
     private var dayRows: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 0) {
-                Text("日期").frame(width: 55, alignment: .leading)
+            HStack {
+                Text("日期").frame(width: 48, alignment: .leading)
                 Text("Token")
                 Spacer(minLength: 8)
                 Text("当日额度消耗")
-                    .frame(width: 90, alignment: .trailing)
-                    .help("官方已用额度在当天的增量。发生重置时，各段分别对应各自周期额度；悬停数值可查看时间段。“已记录消耗”表示记录不完整，仅展示可确认的增量；没有记录时不推算，也不记作 0。按官方快照统计，可能有刷新延迟。")
-                Text("Token 状态").frame(width: 64, alignment: .trailing)
-                    .help("仅表示 Token 的校准状态，额度快照是否完整单独判断。")
+                    .help("官方已用额度在当天的增量，与 Token 数量无关；点击日期查看记录详情。")
             }
-            .font(.system(size: 10))
+            .font(.system(size: 11))
             .foregroundStyle(colors.secondaryText)
-            .padding(.horizontal, 5)
-            .frame(height: 18)
+            .padding(.horizontal, 7)
+            .padding(.bottom, 5)
 
-            ForEach(presentation.days) { day in
-                Button {
-                    selectedDay = day.day
-                } label: {
-                    HStack(spacing: 0) {
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(day.label)
-                            if let reset = day.resetLabel {
-                                Text(reset)
-                                    .font(.system(size: 8))
-                                    .foregroundStyle(colors.accent)
-                                    .lineLimit(1)
+            ForEach(presentation.days.reversed()) { day in
+                VStack(alignment: .leading, spacing: 0) {
+                    Button {
+                        selectedDay = day.day
+                        expandedDay = expandedDay == day.day ? nil : day.day
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(spacing: 8) {
+                                Text(day.label).frame(width: 40, alignment: .leading)
+                                Text(day.formattedTokens).monospacedDigit()
+                                Spacer(minLength: 0)
+                                Text(day.quotaSegments.isEmpty ? day.quotaPercent : "分 \(day.quotaSegments.count) 段")
+                                    .monospacedDigit()
+                                Image(systemName: expandedDay == day.day ? "chevron.up" : "chevron.down")
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundStyle(colors.secondaryText)
                             }
+                            .font(.system(size: 13, weight: .medium))
+                            HStack(spacing: 6) {
+                                Text(day.statusLabel)
+                                    .foregroundStyle(statusColor(day.status))
+                                if let reset = day.resetLabel {
+                                    Text(reset).foregroundStyle(colors.accent)
+                                }
+                                Spacer(minLength: 0)
+                                if day.quotaIsPartial {
+                                    Text("已记录 · 不完整")
+                                        .foregroundStyle(colors.warning)
+                                }
+                            }
+                            .font(.system(size: 11))
                         }
-                        .frame(width: 55, alignment: .leading)
-                        Text(day.formattedTokens)
-                            .fontWeight(.medium)
-                            .monospacedDigit()
-                        Spacer(minLength: 8)
-                        quotaConsumption(day)
-                            .frame(width: 90, alignment: .trailing)
-                            .help(day.quotaHelp)
-                        Text(day.statusLabel)
-                            .foregroundStyle(statusColor(day.status))
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.8)
-                            .frame(width: 64, alignment: .trailing)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(day.day == activeDay ? colors.tint : .clear)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                        .contentShape(Rectangle())
                     }
-                    .font(.system(size: 11))
-                    .padding(.horizontal, 5)
-                    .frame(height: max(24, CGFloat(day.quotaSegments.count) * 14 + 6
-                        + (day.quotaIsPartial && !day.quotaSegments.isEmpty ? 10 : 0)))
-                    .background(day.day == activeDay ? colors.tint : .clear)
-                    .clipShape(RoundedRectangle(cornerRadius: 3))
-                    .overlay(alignment: .bottom) {
-                        if day.id != presentation.days.last?.id {
-                            Rectangle().fill(colors.border).frame(height: 1)
-                        }
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityAddTraits(day.day == activeDay ? .isSelected : [])
-            }
-        }
-    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(day.day == activeDay ? .isSelected : [])
+                    .accessibilityValue(expandedDay == day.day ? "已展开" : "已收起")
+                    .accessibilityHint("显示或收起当日用量详情")
 
-    @ViewBuilder
-    private func quotaConsumption(_ day: TrendDayPresentation) -> some View {
-        if day.quotaSegments.isEmpty {
-            VStack(alignment: .trailing, spacing: 1) {
-                Text(day.quotaIsPartial ? "已记录消耗 " + day.quotaPercent : day.quotaPercent)
-                    .font(.system(size: day.quotaIsPartial ? 9 : 11))
-                    .monospacedDigit()
-                if day.quotaIsPartial {
-                    Text("记录不完整").font(.system(size: 8))
-                }
-            }
-            .foregroundStyle(colors.secondaryText)
-            .accessibilityLabel(day.quotaIsPartial
-                ? "已记录消耗 \(day.quotaPercent)，记录不完整" : "当日额度消耗 \(day.quotaPercent)")
-        } else {
-            VStack(spacing: 1) {
-                ForEach(day.quotaSegments) { part in
-                    HStack(spacing: 4) {
-                        Text(part.label)
-                        Spacer(minLength: 0)
-                        Text(part.isPartial ? "已记录 " + part.percent : part.percent).monospacedDigit()
-                    }
-                    .font(.system(size: 9))
-                    .foregroundStyle(colors.secondaryText)
-                    .frame(height: 13)
-                    .accessibilityElement(children: .combine)
-                }
-                if day.quotaIsPartial {
-                    Text("记录不完整")
-                        .font(.system(size: 8))
+                    if expandedDay == day.day {
+                        VStack(alignment: .leading, spacing: 7) {
+                            HStack(alignment: .firstTextBaseline) {
+                                Text("完整 Token")
+                                Spacer(minLength: 4)
+                                Text(day.tokens, format: .number.locale(Locale(identifier: "zh_CN")))
+                                    .monospacedDigit()
+                                    .textSelection(.enabled)
+                            }
+                            .foregroundStyle(colors.primaryText)
+                            Text(day.quotaHelp)
+                                .lineSpacing(3)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .textSelection(.enabled)
+                        }
+                        .font(.system(size: 11))
                         .foregroundStyle(colors.secondaryText)
-                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(colors.surface, in: RoundedRectangle(cornerRadius: 6))
+                        .padding(.horizontal, 3)
+                        .padding(.bottom, 6)
+                    }
+                    if day.id != presentation.days.first?.id {
+                        Rectangle().fill(colors.border).frame(height: 1)
+                    }
                 }
+                .id(day.day)
             }
         }
     }

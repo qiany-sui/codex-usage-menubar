@@ -652,6 +652,23 @@ public actor SQLiteUsageStore: UsageStore {
             guard try officialDays.step() == .done else {
                 throw corruption(operation: "prune official days")
             }
+
+            // 区间前的末条读数仍用于跨日边界和周期识别，每个额度分别保留。
+            let quotas = try connection.prepare(
+                """
+                DELETE FROM quota_snapshots
+                WHERE fetched_at < ? AND fetched_at NOT IN (
+                  SELECT MAX(fetched_at) FROM quota_snapshots
+                  WHERE fetched_at < ? GROUP BY limit_id
+                );
+                """,
+                operation: "prune quota history"
+            )
+            try quotas.bind(eventsBefore.timeIntervalSince1970, at: 1)
+            try quotas.bind(eventsBefore.timeIntervalSince1970, at: 2)
+            guard try quotas.step() == .done else {
+                throw corruption(operation: "prune quota history")
+            }
         }
     }
 

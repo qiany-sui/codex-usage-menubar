@@ -225,7 +225,7 @@ public actor UsageService {
     }
 
     public func processNextAccountNotification(
-        now: Date
+        now: @Sendable () -> Date
     ) async throws -> UsageSnapshot? {
         await acquireNotificationConsumer()
         defer { releaseNotificationConsumer() }
@@ -288,7 +288,7 @@ public actor UsageService {
         try Task.checkCancellation()
         return try await processAccountNotificationLocked(
             notification,
-            now: now
+            now: now()
         )
     }
 
@@ -441,9 +441,13 @@ public actor UsageService {
             )
             try await store.replace(cycles: cycles)
             if cycles.count == 9, let earliest = cycles.first {
+                let todayStart = calendar.startOfDay(for: now)
+                let recentDaysStart = calendar.date(byAdding: .day, value: -6, to: todayStart)
+                    ?? todayStart.addingTimeInterval(-6 * 24 * 60 * 60)
+                let retentionStart = min(earliest.startsAt, recentDaysStart)
                 try await store.pruneUsage(
-                    eventsBefore: earliest.startsAt,
-                    officialDaysBefore: localDay(for: earliest.startsAt)
+                    eventsBefore: retentionStart,
+                    officialDaysBefore: localDay(for: retentionStart)
                 )
             }
         }

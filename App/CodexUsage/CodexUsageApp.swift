@@ -34,6 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 struct CodexUsageApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var viewModel: UsageViewModel
+    private let isTestProcess = ProcessInfo.processInfo.environment["XCTestBundlePath"] != nil
 
     init() {
         let container = AppContainer.live()
@@ -50,7 +51,9 @@ struct CodexUsageApp: App {
         MenuBarExtra {
             UsagePopoverView(viewModel: viewModel)
                 .onAppear {
-                    Task { await viewModel.openPopover() }
+                    if !isTestProcess {
+                        Task { await viewModel.openPopover() }
+                    }
                 }
         } label: {
             let presentation = viewModel.menuBarPresentation
@@ -74,11 +77,19 @@ struct CodexUsageApp: App {
                     .font(.system(size: 10, weight: .medium))
                     .monospacedDigit()
                     .offset(y: 0.5)
+                if presentation.isStale {
+                    Image(systemName: "clock")
+                        .font(.system(size: 9))
+                        .accessibilityHidden(true)
+                }
             }
                 .fixedSize()
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(presentation.accessibilityLabel)
+                .help(presentation.help)
                 .task {
+                    // 宿主测试使用临时运行时，不能同时启动真实数据库和目录监听。
+                    guard !isTestProcess else { return }
                     appDelegate.prepareToTerminate = {
                         await viewModel.stop()
                     }

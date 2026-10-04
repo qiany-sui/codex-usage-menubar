@@ -304,6 +304,21 @@ final class AppServerClientTests: XCTestCase {
         XCTAssertNil(eof)
     }
 
+    func testProcessReceivesConfiguredCodexHomeAndOtherEnvironmentValues() async throws {
+        let transport = ProcessJSONLTransport(
+            executableURL: URL(fileURLWithPath: "/bin/sh"),
+            arguments: ["-c", "printf '%s\\n' \"$CODEX_HOME\" \"$FIXTURE_MARKER\""],
+            environment: ["CODEX_HOME": "/tmp/selected-codex-home", "FIXTURE_MARKER": "preserved"]
+        )
+        try await transport.start()
+        let home = try await transport.nextLine()
+        let marker = try await transport.nextLine()
+        await transport.stop()
+
+        XCTAssertEqual(home, Data("/tmp/selected-codex-home".utf8))
+        XCTAssertEqual(marker, Data("preserved".utf8))
+    }
+
     func testProcessReportsErrorWhenStdoutClosesBeforeProcessExit() async throws {
         let transport = try processTransport(mode: "stdout-eof")
 

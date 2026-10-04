@@ -7,7 +7,7 @@ protocol UsageServicing: Actor {
         now: Date
     ) async throws -> UsageSnapshot
     func processNextAccountNotification(
-        now: Date
+        now: @Sendable () -> Date
     ) async throws -> UsageSnapshot?
     func currentSnapshot(now: Date) async throws -> UsageSnapshot
     func resolvedCodexHome() async -> URL?

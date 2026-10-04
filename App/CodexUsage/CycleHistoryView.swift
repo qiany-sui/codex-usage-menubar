@@ -22,9 +22,10 @@ struct CycleHistoryView: View {
                         Text("额度已用")
                             .frame(width: 64, alignment: .trailing)
                     }
-                    .font(.system(size: 10))
+                    .font(.system(size: 11))
                     .foregroundStyle(colors.secondaryText)
                     .padding(.horizontal, 8)
+                    .padding(.trailing, 14)
                     .frame(height: 14)
 
                     ScrollView {
@@ -34,14 +35,15 @@ struct CycleHistoryView: View {
                                     .padding(.bottom, entry.isCurrent ? 3 : 0)
                             }
                         }
+                        .padding(.trailing, 14)
                     }
 
                     Text("最后记录表示记录不完整；— 表示额度记录不足")
-                        .font(.system(size: 9))
+                        .font(.system(size: 11))
                         .foregroundStyle(colors.secondaryText)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 8)
-                        .frame(height: 11)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
@@ -79,56 +81,45 @@ struct CycleHistoryView: View {
     }
 
     private func cycleRow(_ entry: CycleEntryPresentation) -> some View {
-        HStack(spacing: 10) {
-            VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 6) {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 10) {
+                HStack(spacing: 5) {
                     Text(entry.range)
                     if entry.isCurrent {
                         Text("当前")
-                            .font(.system(size: 9, weight: .medium))
+                            .font(.system(size: 11, weight: .medium))
                             .foregroundStyle(colors.accent)
                     }
                 }
-                .frame(height: 15.4)
-
-                HStack(spacing: 6) {
-                    Text(entry.statusLabel)
-                    if entry.boundaryIsEstimated {
-                        Text("边界估算")
-                    }
+                .font(.system(size: 12))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Text(entry.formattedTokens)
+                    .font(.system(size: 14, weight: .medium))
+                    .monospacedDigit()
+                    .frame(width: 74, alignment: .trailing)
+                Text(entry.quotaPercent == "--" ? "—" : entry.quotaPercent)
+                    .font(.system(size: 13, weight: .medium))
+                    .monospacedDigit()
+                    .foregroundStyle(entry.isCurrent ? colors.accent : colors.primaryText)
+                    .frame(width: 64, alignment: .trailing)
+                    .accessibilityLabel(entry.quotaUsage)
+                    .help(entry.quotaHelp)
+            }
+            HStack(alignment: .top, spacing: 8) {
+                Text(entry.statusLabel + (entry.boundaryIsEstimated ? " · 边界估算" : ""))
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+                if entry.quotaIsPartial {
+                    Text("最后记录 · 不完整")
+                        .foregroundStyle(colors.warning)
+                        .help(entry.quotaHelp)
                 }
-                .font(.system(size: 10))
-                .foregroundStyle(colors.secondaryText)
-                .frame(height: 14)
             }
             .font(.system(size: 11))
-
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            Text(entry.formattedTokens)
-                .font(.system(size: 14, weight: .medium))
-                .monospacedDigit()
-                .frame(width: 74, alignment: .trailing)
-
-            VStack(alignment: .trailing, spacing: 1) {
-                Text(entry.quotaIsPartial ? "最后记录 " + entry.quotaPercent
-                    : entry.quotaPercent == "--" ? "—" : entry.quotaPercent)
-                    .font(.system(size: entry.quotaIsPartial ? 10 : 12, weight: .medium))
-                    .monospacedDigit()
-                if entry.quotaIsPartial {
-                    Text("记录不完整").font(.system(size: 8))
-                }
-            }
-            .foregroundStyle(entry.isCurrent ? colors.accent : colors.secondaryText)
-            .frame(width: 64, alignment: .trailing)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(entry.quotaUsage)
-            .help(entry.quotaHelp)
+            .foregroundStyle(colors.secondaryText)
         }
-        .lineLimit(1)
-        .minimumScaleFactor(0.85)
         .padding(.horizontal, 8)
-        .frame(height: 36)
+        .padding(.vertical, 8)
         .background(entry.isCurrent ? colors.tint : .clear)
         .clipShape(RoundedRectangle(cornerRadius: 7))
         .overlay(alignment: .bottom) {

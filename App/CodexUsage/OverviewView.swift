@@ -5,6 +5,7 @@ struct OverviewView: View {
     @Binding var style: UsageStyle
     let isRefreshing: Bool
     let showsCodexHomeAction: Bool
+    let codexHomeSelectionMessage: String?
     let onRefresh: () -> Void
     let onShowTrend: () -> Void
     let onShowHistory: () -> Void
@@ -18,6 +19,7 @@ struct OverviewView: View {
         style: Binding<UsageStyle> = .constant(.aurora),
         isRefreshing: Bool = false,
         showsCodexHomeAction: Bool = false,
+        codexHomeSelectionMessage: String? = nil,
         onRefresh: @escaping () -> Void = {},
         onShowTrend: @escaping () -> Void = {},
         onShowHistory: @escaping () -> Void = {},
@@ -28,6 +30,7 @@ struct OverviewView: View {
         _style = style
         self.isRefreshing = isRefreshing
         self.showsCodexHomeAction = showsCodexHomeAction
+        self.codexHomeSelectionMessage = codexHomeSelectionMessage
         self.onRefresh = onRefresh
         self.onShowTrend = onShowTrend
         self.onShowHistory = onShowHistory
@@ -38,17 +41,28 @@ struct OverviewView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            quotaSection
-                .padding(.top, style.hasAccentCards ? 9 : 12)
-            todaySection
-                .padding(.top, style.hasAccentCards ? 9 : 11)
-            cycleSection
-                .padding(.top, style.hasAccentCards ? 8 : 9)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    if let codexHomeSelectionMessage {
+                        Text(codexHomeSelectionMessage)
+                            .font(.system(size: 11))
+                            .foregroundStyle(colors.warning)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.bottom, 8)
+                    }
+                    quotaSection
+                    todaySection
+                        .padding(.top, style.hasAccentCards ? 7 : 11)
+                    cycleSection
+                        .padding(.top, style.hasAccentCards ? 6 : 9)
+                }
+                .padding(.vertical, 1)
+            }
+            .padding(.top, style.hasAccentCards ? 7 : 12)
             navigationRow
-                .padding(.top, style.hasAccentCards ? 8 : 9)
-            Spacer(minLength: 0)
+                .padding(.top, style.hasAccentCards ? 6 : 9)
             footer
-                .padding(.top, 10)
+                .padding(.top, 8)
         }
         .padding(.horizontal, style.hasAccentCards ? 16 : UsageTheme.pagePadding)
         .padding(.top, UsageTheme.pagePadding)
@@ -218,7 +232,7 @@ struct OverviewView: View {
             }
             SegmentedQuotaBar(progress: presentation.progress)
             Text(usedQuotaText)
-                .font(.system(size: 10))
+                .font(.system(size: 11))
                 .foregroundStyle(colors.secondaryText)
                 .frame(maxWidth: .infinity, alignment: .trailing)
         }
@@ -293,13 +307,15 @@ struct OverviewView: View {
     @ViewBuilder
     private var todaySection: some View {
         if style.hasAccentCards {
+            let metricHeight: CGFloat = presentation.todayQuota.isPartial
+                && presentation.todayQuota.segments.isEmpty ? 40 : 36
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .top, spacing: 0) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("今日 Token")
                             .font(.system(size: 11, weight: .medium))
                             .frame(height: 16)
-                        todayTotal.frame(height: 36)
+                        todayTotal.frame(height: metricHeight)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     Rectangle().fill(colors.border).frame(width: 1, height: 46)
@@ -309,7 +325,7 @@ struct OverviewView: View {
                             Text("当日额度消耗")
                                 .font(.system(size: 11, weight: .medium))
                                 .frame(height: 16)
-                            todayQuotaValue.frame(height: 36)
+                            todayQuotaValue.frame(height: metricHeight)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.leading, 16)
@@ -320,18 +336,18 @@ struct OverviewView: View {
                     .accessibilityLabel(presentation.todayQuota.summary + "，查看最近 7 天")
                 }
                 Rectangle().fill(colors.border).frame(height: 1)
-                    .padding(.top, 6)
+                    .padding(.top, 4)
                 HStack(spacing: 0) {
                     tokenDetail("输入", value: presentation.inputTokens, showsDivider: false)
                     tokenDetail("其中缓存", value: presentation.cachedInputTokens, showsDivider: true)
                     tokenDetail("输出", value: presentation.outputTokens, showsDivider: true)
                 }
                 .frame(height: 36)
-                .padding(.top, 6)
+                .padding(.top, 4)
             }
             .padding(.horizontal, 16)
-            .padding(.top, 10)
-            .padding(.bottom, 8)
+            .padding(.top, 6)
+            .padding(.bottom, 6)
             .modifier(UsageAccentCard(style: style, illuminated: style == .neon))
         } else {
             VStack(alignment: .leading, spacing: 0) {
@@ -347,7 +363,7 @@ struct OverviewView: View {
                     Button(action: onShowTrend) {
                         VStack(alignment: .trailing, spacing: 2) {
                             Text("当日额度消耗")
-                                .font(.system(size: 10))
+                                .font(.system(size: 11))
                                 .foregroundStyle(colors.secondaryText)
                                 .frame(height: 15.4)
                             todayQuotaValue.frame(height: 31.86)
@@ -396,24 +412,22 @@ struct OverviewView: View {
                     .foregroundStyle(quota.percent == "--" ? colors.secondaryText : todayQuotaColor)
                 if quota.isPartial {
                     Text("已记录 · 记录不完整")
-                        .font(.system(size: 8))
+                        .font(.system(size: 11))
                         .foregroundStyle(colors.secondaryText)
                 }
             }
         } else if quota.segments.count <= 2 {
-            HStack(spacing: 12) {
+            VStack(spacing: 2) {
                 ForEach(quota.segments) { segment in
-                    VStack(alignment: style.hasAccentCards ? .leading : .trailing, spacing: 1) {
-                        Text(segment.label + (segment.isPartial ? " · 已记录" : ""))
-                            .font(.system(size: style.hasAccentCards ? 8 : 9))
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.7)
+                    HStack(spacing: 4) {
+                        Text(segment.label)
+                            .font(.system(size: 11))
                             .foregroundStyle(colors.secondaryText)
-                        Text(segment.percent == "记录不足" ? "—" : segment.percent)
-                            .font(.system(size: style.hasAccentCards ? 18 : 14, weight: .medium))
+                        Spacer(minLength: 0)
+                        Text((segment.isPartial ? "已记录 " : "") + (segment.percent == "记录不足" ? "—" : segment.percent))
+                            .font(.system(size: 11, weight: .medium))
                             .monospacedDigit()
                             .lineLimit(1)
-                            .minimumScaleFactor(0.7)
                             .foregroundStyle(segment.percent == "记录不足" ? colors.secondaryText : todayQuotaColor)
                     }
                 }
@@ -487,32 +501,26 @@ struct OverviewView: View {
     @ViewBuilder
     private var cycleSection: some View {
         if style.hasAccentCards {
-            HStack(spacing: 5) {
-                Text("当前周期 Token")
-                    .font(.system(size: 10, weight: .medium))
-                    .fixedSize()
-                Text(presentation.currentCycleStatus)
-                    .font(.system(size: 9))
-                    .foregroundStyle(cycleStatusColor)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 3)
-                    .background(colors.soft.opacity(0.2), in: RoundedRectangle(cornerRadius: 7))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 7).strokeBorder(colors.border, lineWidth: 1)
-                    }
-                Spacer(minLength: 0)
-                Rectangle().fill(colors.border).frame(width: 1, height: 18)
-                Text(presentation.currentCycleTokens)
-                    .font(.system(size: 17, weight: .semibold))
-                    .tracking(-0.5)
-                    .monospacedDigit()
-                Spacer(minLength: 0)
-                cycleQuota.font(.system(size: 10))
+            VStack(spacing: 4) {
+                HStack {
+                    Text("当前周期 Token")
+                        .font(.system(size: 11, weight: .medium))
+                    Spacer(minLength: 8)
+                    Text(presentation.currentCycleTokens)
+                        .font(.system(size: 17, weight: .semibold))
+                        .monospacedDigit()
+                }
+                HStack {
+                    Text(presentation.currentCycleStatus)
+                        .foregroundStyle(cycleStatusColor)
+                    Spacer(minLength: 8)
+                    cycleQuota
+                }
+                .font(.system(size: 11))
             }
             .lineLimit(1)
-            .minimumScaleFactor(0.75)
             .padding(.horizontal, 10)
-            .frame(height: 36)
+            .padding(.vertical, 6)
             .modifier(UsageAccentCard(style: style))
         } else {
             HStack(spacing: 12) {
@@ -531,7 +539,7 @@ struct OverviewView: View {
                         .font(.system(size: 18, weight: .medium))
                         .tracking(-0.5)
                         .monospacedDigit()
-                    cycleQuota.font(.system(size: 10))
+                    cycleQuota.font(.system(size: 11))
                 }
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)

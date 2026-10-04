@@ -714,6 +714,98 @@ final class SQLiteUsageStoreTests: XCTestCase {
         XCTAssertEqual(savedCursor, cursor)
     }
 
+    func testPruneQuotaKeepsEachLimitPredecessorAndBoundaryReadings() async throws {
+        let store = try SQLiteUsageStore(databaseURL: try databaseURLWithCleanup())
+        try await store.migrate()
+        func reading(_ limitID: String, _ fetched: Double, _ percent: Double) -> QuotaSnapshot {
+            QuotaSnapshot(
+                limitID: limitID, usedPercent: percent, windowDurationMinutes: 10_080,
+                startsAt: Date(timeIntervalSince1970: 0),
+                resetsAt: Date(timeIntervalSince1970: 1_000),
+                fetchedAt: Date(timeIntervalSince1970: fetched)
+            )
+        }
+        let values = [
+            reading("codex", 10, 1), reading("other", 20, 2),
+            reading("codex", 80, 8), reading("other", 90, 9),
+            reading("codex", 100, 10), reading("other", 110, 11),
+            reading("codex", 120, 12), reading("inactive", 30, 3),
+            reading("inactive", 70, 7)
+        ]
+        for value in values { try await store.save(quota: value) }
+        // 同时间的更新沿用现有 UPSERT；边界记录必须按最终值保留。
+        let boundaryUpdate = reading("codex", 100, 15)
+        try await store.save(quota: boundaryUpdate)
+        let latestBefore = try await store.latestQuota()
+        let historyBefore = try await store.quotaHistory(
+            from: Date(timeIntervalSince1970: 100),
+            to: Date(timeIntervalSince1970: 200), limitID: "codex"
+        )
+
+        for _ in 0..<2 {
+            try await store.pruneUsage(
+                eventsBefore: Date(timeIntervalSince1970: 100),
+                officialDaysBefore: LocalDay(year: 2026, month: 8, day: 1)
+            )
+        }
+        let codex = try await store.quotaHistory(from: .distantPast, to: .distantFuture, limitID: "codex")
+        let other = try await store.quotaHistory(from: .distantPast, to: .distantFuture, limitID: "other")
+        let inactive = try await store.quotaHistory(from: .distantPast, to: .distantFuture, limitID: "inactive")
+        let historyAfter = try await store.quotaHistory(
+            from: Date(timeIntervalSince1970: 100),
+            to: Date(timeIntervalSince1970: 200), limitID: "codex"
+        )
+        let latestAfter = try await store.latestQuota()
+
+        XCTAssertEqual(codex, [values[2], boundaryUpdate, values[6]])
+        XCTAssertEqual(other, [values[3], values[5]])
+        XCTAssertEqual(inactive, [values[8]])
+        XCTAssertEqual(historyAfter, historyBefore)
+        XCTAssertEqual(latestAfter, latestBefore)
+    }
+
+    func testPruneQuotaPreservesCrossMidnightConsumption() async throws {
+        let store = try SQLiteUsageStore(databaseURL: try databaseURLWithCleanup())
+        try await store.migrate()
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let cutoff = try date("2026-08-25T00:00:00Z")
+        let now = try date("2026-08-25T12:00:00Z")
+        let startsAt = try date("2026-08-24T12:00:00Z")
+        let resetsAt = try date("2026-08-31T12:00:00Z")
+        let readings = [
+            QuotaSnapshot(limitID: "codex", usedPercent: 10, windowDurationMinutes: 10_080,
+                          startsAt: startsAt, resetsAt: resetsAt, fetchedAt: cutoff.addingTimeInterval(-1_200)),
+            QuotaSnapshot(limitID: "codex", usedPercent: 20, windowDurationMinutes: 10_080,
+                          startsAt: startsAt, resetsAt: resetsAt, fetchedAt: cutoff.addingTimeInterval(-300)),
+            QuotaSnapshot(limitID: "codex", usedPercent: 20, windowDurationMinutes: 10_080,
+                          startsAt: startsAt, resetsAt: resetsAt, fetchedAt: cutoff.addingTimeInterval(300)),
+            QuotaSnapshot(limitID: "codex", usedPercent: 40, windowDurationMinutes: 10_080,
+                          startsAt: startsAt, resetsAt: resetsAt, fetchedAt: now)
+        ]
+        for reading in readings { try await store.save(quota: reading) }
+        let before = try await store.quotaHistory(from: cutoff, to: now, limitID: "codex")
+        try await store.pruneUsage(
+            eventsBefore: cutoff, officialDaysBefore: LocalDay(year: 2026, month: 8, day: 25)
+        )
+        let after = try await store.quotaHistory(from: cutoff, to: now, limitID: "codex")
+        let latest = try await store.latestQuota()
+        let reconciler = UsageReconciler()
+        let beforeSnapshot = reconciler.snapshot(
+            now: now, calendar: calendar, quota: latest, events: [], officialDays: [],
+            cycles: [], lastUpdatedAt: now, quotaHistory: before
+        )
+        let afterSnapshot = reconciler.snapshot(
+            now: now, calendar: calendar, quota: latest, events: [], officialDays: [],
+            cycles: [], lastUpdatedAt: now, quotaHistory: after
+        )
+
+        XCTAssertEqual(beforeSnapshot.today.quotaConsumedPercent, 20)
+        XCTAssertEqual(afterSnapshot.today.quotaConsumedPercent, 20)
+        XCTAssertEqual(after, Array(readings.dropFirst()))
+        XCTAssertEqual(latest, readings.last)
+    }
+
     func testNonFinitePruneDateIsRejectedWithoutDeletingUsage() async throws {
         let store = try SQLiteUsageStore(databaseURL: try databaseURLWithCleanup())
         try await store.migrate()
