@@ -307,15 +307,13 @@ struct OverviewView: View {
     @ViewBuilder
     private var todaySection: some View {
         if style.hasAccentCards {
-            let metricHeight: CGFloat = presentation.todayQuota.isPartial
-                && presentation.todayQuota.segments.isEmpty ? 40 : 36
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .top, spacing: 0) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("今日 Token")
                             .font(.system(size: 11, weight: .medium))
                             .frame(height: 16)
-                        todayTotal.frame(height: metricHeight)
+                        todayTotal.frame(height: todayMetricHeight)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     Rectangle().fill(colors.border).frame(width: 1, height: 46)
@@ -325,7 +323,7 @@ struct OverviewView: View {
                             Text("当日额度消耗")
                                 .font(.system(size: 11, weight: .medium))
                                 .frame(height: 16)
-                            todayQuotaValue.frame(height: metricHeight)
+                            todayQuotaValue.frame(height: todayMetricHeight)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.leading, 16)
@@ -357,7 +355,7 @@ struct OverviewView: View {
                             .font(.system(size: 11, weight: .medium))
                             .foregroundStyle(colors.secondaryText)
                             .frame(height: 15.4)
-                        todayTotal.frame(height: 31.86)
+                        todayTotal.frame(height: todayMetricHeight)
                     }
                     Spacer(minLength: 0)
                     Button(action: onShowTrend) {
@@ -366,8 +364,10 @@ struct OverviewView: View {
                                 .font(.system(size: 11))
                                 .foregroundStyle(colors.secondaryText)
                                 .frame(height: 15.4)
-                            todayQuotaValue.frame(height: 31.86)
+                            todayQuotaValue.frame(height: todayMetricHeight)
                         }
+                        .frame(width: presentation.todayQuota.segments.isEmpty
+                            || presentation.todayQuota.segments.count > 2 ? nil : 126)
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -395,8 +395,17 @@ struct OverviewView: View {
         }
     }
 
+    private var todayMetricHeight: CGFloat {
+        let quota = presentation.todayQuota
+        if !quota.segments.isEmpty && quota.segments.count <= 2 {
+            return quota.isPartial ? 60 : 46
+        }
+        if quota.isPartial && quota.segments.isEmpty { return 40 }
+        return style.hasAccentCards ? 36 : 31.86
+    }
+
     private var todayQuotaColor: Color {
-        style == .aurora ? colors.primaryText : (colors.accentText ?? colors.accent)
+        colors.accentText ?? colors.accent
     }
 
     @ViewBuilder
@@ -417,21 +426,28 @@ struct OverviewView: View {
                 }
             }
         } else if quota.segments.count <= 2 {
-            VStack(spacing: 2) {
+            HStack(alignment: .top, spacing: 10) {
                 ForEach(quota.segments) { segment in
-                    HStack(spacing: 4) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(segment.percent == "记录不足" ? "—" : segment.percent)
+                            .font(.system(size: 24, weight: .semibold))
+                            .monospacedDigit()
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.75)
+                            .foregroundStyle(segment.percent == "记录不足" ? colors.secondaryText : todayQuotaColor)
                         Text(segment.label)
                             .font(.system(size: 11))
                             .foregroundStyle(colors.secondaryText)
-                        Spacer(minLength: 0)
-                        Text((segment.isPartial ? "已记录 " : "") + (segment.percent == "记录不足" ? "—" : segment.percent))
-                            .font(.system(size: 11, weight: .medium))
-                            .monospacedDigit()
-                            .lineLimit(1)
-                            .foregroundStyle(segment.percent == "记录不足" ? colors.secondaryText : todayQuotaColor)
+                        if segment.isPartial {
+                            Text("已记录")
+                                .font(.system(size: 10))
+                                .foregroundStyle(colors.secondaryText)
+                        }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
+            .frame(minWidth: quota.segments.count == 2 ? 116 : 58)
         } else {
             HStack(spacing: 4) {
                 Text("分 \(quota.segments.count) 段")

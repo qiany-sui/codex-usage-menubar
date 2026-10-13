@@ -127,11 +127,11 @@ struct UsagePopoverSurface: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .padding(1)
             .frame(
                 width: UsageTheme.popoverSize.width,
                 height: UsageTheme.popoverSize.height
             )
+            // 圆角和外沿交给系统窗口，避免自绘圆角露出宿主底色形成双层边框。
             .background {
                 colors.background
                 if style.hasAccentCards {
@@ -147,29 +147,6 @@ struct UsagePopoverSurface: ViewModifier {
                         startRadius: 0,
                         endRadius: 260
                     )
-                }
-            }
-            .clipShape(RoundedRectangle(cornerRadius: style.hasAccentCards ? 20 : 16))
-            .overlay {
-                if style == .neon {
-                    RoundedRectangle(cornerRadius: 20)
-                        .strokeBorder(
-                            LinearGradient(
-                                colors: [colors.accentMiddle ?? colors.accent, colors.accentEnd ?? colors.accent],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            ),
-                            lineWidth: 1.2
-                        )
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 17)
-                                .inset(by: 3)
-                                .strokeBorder(colors.accentGradient, lineWidth: 0.7)
-                                .opacity(0.45)
-                        }
-                } else {
-                    RoundedRectangle(cornerRadius: style.hasAccentCards ? 20 : 16)
-                        .strokeBorder(colors.border, lineWidth: 1)
                 }
             }
             .foregroundStyle(colors.primaryText)
