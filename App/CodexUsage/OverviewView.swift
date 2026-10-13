@@ -13,6 +13,7 @@ struct OverviewView: View {
     let onExit: () -> Void
 
     @Environment(\.usageColors) private var colors
+    @State private var contentHeight: CGFloat?
 
     init(
         presentation: OverviewPresentation,
@@ -51,24 +52,94 @@ struct OverviewView: View {
                             .padding(.bottom, 8)
                     }
                     quotaSection
-                    todaySection
-                        .padding(.top, style.hasAccentCards ? 7 : 11)
-                    cycleSection
-                        .padding(.top, style.hasAccentCards ? 6 : 9)
+                    if style == .aurora {
+                        usageSection.padding(.top, 8)
+                    } else {
+                        todaySection
+                            .padding(.top, 7)
+                        cycleSection
+                            .padding(.top, 5)
+                    }
                 }
                 .padding(.vertical, 1)
+                .background {
+                    GeometryReader { geometry in
+                        Color.clear.preference(key: OverviewContentHeightKey.self, value: geometry.size.height)
+                    }
+                }
             }
-            .padding(.top, style.hasAccentCards ? 7 : 12)
+            .frame(maxHeight: style == .aurora ? contentHeight : nil)
+            .onPreferenceChange(OverviewContentHeightKey.self) { contentHeight = $0 }
+            .padding(.top, 8)
             navigationRow
-                .padding(.top, style.hasAccentCards ? 6 : 9)
+                .padding(.top, 9)
             footer
-                .padding(.top, 8)
+                .padding(.top, 6)
         }
         .padding(.horizontal, style.hasAccentCards ? 16 : UsageTheme.pagePadding)
-        .padding(.top, UsageTheme.pagePadding)
-        .padding(.bottom, 16)
+        .padding(.top, 12)
+        .padding(.bottom, 10)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .foregroundStyle(colors.primaryText)
+    }
+
+    private var usageSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top, spacing: 16) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("今日 Token")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(colors.secondaryText)
+                    todayTotal.fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Button(action: onShowTrend) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("当日额度消耗")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(colors.secondaryText)
+                        todayQuotaValue
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(presentation.todayQuota.help + "\n点击查看最近 7 天。")
+                .accessibilityLabel(presentation.todayQuota.summary + "，查看最近 7 天")
+            }
+            Rectangle().fill(colors.border).frame(height: 1)
+                .padding(.vertical, 5)
+            HStack(spacing: 0) {
+                tokenDetail("输入", value: presentation.inputTokens, showsDivider: false)
+                tokenDetail("其中缓存", value: presentation.cachedInputTokens, showsDivider: true)
+                tokenDetail("输出", value: presentation.outputTokens, showsDivider: true)
+            }
+            .frame(height: 38)
+            Rectangle().fill(colors.border).frame(height: 1)
+                .padding(.vertical, 5)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("当前周期 Token")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(colors.secondaryText)
+                    Spacer(minLength: 8)
+                    Text(presentation.currentCycleTokens)
+                        .font(.system(size: 17, weight: .semibold))
+                        .monospacedDigit()
+                }
+                HStack {
+                    Text(presentation.currentCycleStatus)
+                        .foregroundStyle(cycleStatusColor)
+                    Spacer(minLength: 8)
+                    cycleQuota
+                }
+                .font(.system(size: 11))
+            }
+            .lineLimit(1)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 7)
+        .modifier(UsageAccentCard(style: style))
     }
 
     private var header: some View {
@@ -172,41 +243,25 @@ struct OverviewView: View {
         if style == .aurora {
             auroraQuotaSection
         } else {
-            HStack(spacing: style == .neon ? 12 : 21) {
-                if style == .neon {
-                    NeonQuotaGauge(progress: presentation.progress)
-                        .overlay {
-                            remainingQuota(numberSize: 38, unitSize: 22)
-                                .offset(y: 9)
-                        }
-                        .accessibilityElement(children: .ignore)
-                        .accessibilityLabel("周额度剩余")
-                        .accessibilityValue(presentation.remainingPercent)
-                    Rectangle().fill(colors.border).frame(width: 1, height: 104)
-                } else {
-                    quotaRing
-                }
+            HStack(spacing: 21) {
+                quotaRing
                 VStack(alignment: .leading, spacing: 0) {
                     Text("周额度剩余")
-                        .font(.system(size: style == .neon ? 14 : 12, weight: .medium))
-                        .frame(height: style == .neon ? 20 : 16.8)
+                        .font(.system(size: 12, weight: .medium))
+                        .frame(height: 16.8)
                     resetDetails(alignment: .leading)
-                        .padding(.top, style == .neon ? 9 : 10)
-                    if style == .neon {
-                        Rectangle().fill(colors.border).frame(height: 1)
-                            .padding(.top, 10)
-                    }
+                        .padding(.top, 10)
                     Text(usedQuotaText)
                         .font(.system(size: 11))
                         .foregroundStyle(colors.secondaryText)
                         .frame(height: 15.4)
-                        .padding(.top, style == .neon ? 8 : 11)
+                        .padding(.top, 11)
                 }
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, style == .neon ? 0 : 7)
-            .padding(.top, style == .neon ? 0 : 3)
-            .frame(height: style == .neon ? 122 : 120)
+            .padding(.horizontal, 7)
+            .padding(.top, 3)
+            .frame(height: 120)
         }
     }
 
@@ -304,95 +359,51 @@ struct OverviewView: View {
         .accessibilityValue(presentation.remainingPercent)
     }
 
-    @ViewBuilder
     private var todaySection: some View {
-        if style.hasAccentCards {
-            VStack(alignment: .leading, spacing: 0) {
-                HStack(alignment: .top, spacing: 0) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("今日 Token")
-                            .font(.system(size: 11, weight: .medium))
-                            .frame(height: 16)
-                        todayTotal.frame(height: todayMetricHeight)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    Rectangle().fill(colors.border).frame(width: 1, height: 46)
-                        .padding(.top, 5)
-                    Button(action: onShowTrend) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("当日额度消耗")
-                                .font(.system(size: 11, weight: .medium))
-                                .frame(height: 16)
-                            todayQuotaValue.frame(height: todayMetricHeight)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.leading, 16)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .help(presentation.todayQuota.help + "\n点击查看最近 7 天。")
-                    .accessibilityLabel(presentation.todayQuota.summary + "，查看最近 7 天")
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("今日 Token")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(colors.secondaryText)
+                        .frame(height: 15.4)
+                    todayTotal.frame(height: todayMetricHeight)
                 }
-                Rectangle().fill(colors.border).frame(height: 1)
-                    .padding(.top, 4)
-                HStack(spacing: 0) {
-                    tokenDetail("输入", value: presentation.inputTokens, showsDivider: false)
-                    tokenDetail("其中缓存", value: presentation.cachedInputTokens, showsDivider: true)
-                    tokenDetail("输出", value: presentation.outputTokens, showsDivider: true)
-                }
-                .frame(height: 36)
-                .padding(.top, 4)
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 6)
-            .padding(.bottom, 6)
-            .modifier(UsageAccentCard(style: style, illuminated: style == .neon))
-        } else {
-            VStack(alignment: .leading, spacing: 0) {
-                HStack(alignment: .top, spacing: 8) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("今日 Token")
-                            .font(.system(size: 11, weight: .medium))
+                Spacer(minLength: 0)
+                Button(action: onShowTrend) {
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text("当日额度消耗")
+                            .font(.system(size: 11))
                             .foregroundStyle(colors.secondaryText)
                             .frame(height: 15.4)
-                        todayTotal.frame(height: todayMetricHeight)
+                        todayQuotaValue.frame(height: todayMetricHeight)
                     }
-                    Spacer(minLength: 0)
-                    Button(action: onShowTrend) {
-                        VStack(alignment: .trailing, spacing: 2) {
-                            Text("当日额度消耗")
-                                .font(.system(size: 11))
-                                .foregroundStyle(colors.secondaryText)
-                                .frame(height: 15.4)
-                            todayQuotaValue.frame(height: todayMetricHeight)
-                        }
-                        .frame(width: presentation.todayQuota.segments.isEmpty
-                            || presentation.todayQuota.segments.count > 2 ? nil : 126)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .help(presentation.todayQuota.help + "\n点击查看最近 7 天。")
-                    .accessibilityLabel(presentation.todayQuota.summary + "，查看最近 7 天")
+                    .frame(width: presentation.todayQuota.segments.isEmpty
+                        || presentation.todayQuota.segments.count > 2 ? nil : 126)
+                    .contentShape(Rectangle())
                 }
-                GeometryReader { geometry in
-                    let available = geometry.size.width - 18
-                    HStack(spacing: 9) {
-                        tokenDetail("输入", value: presentation.inputTokens, showsDivider: false)
-                            .frame(width: available / 3.11, alignment: .leading)
-                        tokenDetail("其中缓存", value: presentation.cachedInputTokens, showsDivider: true)
-                            .frame(width: available * 1.26 / 3.11, alignment: .leading)
-                        tokenDetail("输出", value: presentation.outputTokens, showsDivider: true)
-                            .frame(width: available * 0.85 / 3.11, alignment: .leading)
-                    }
-                }
-                .frame(height: 34.6)
-                .padding(.top, 8)
+                .buttonStyle(.plain)
+                .help(presentation.todayQuota.help + "\n点击查看最近 7 天。")
+                .accessibilityLabel(presentation.todayQuota.summary + "，查看最近 7 天")
             }
-            .padding(.horizontal, 13)
-            .padding(.top, 11)
-            .padding(.bottom, 12)
-            .background(colors.surface, in: RoundedRectangle(cornerRadius: 11))
+            GeometryReader { geometry in
+                let available = geometry.size.width - 18
+                HStack(spacing: 9) {
+                    tokenDetail("输入", value: presentation.inputTokens, showsDivider: false)
+                        .frame(width: available / 3.11, alignment: .leading)
+                    tokenDetail("其中缓存", value: presentation.cachedInputTokens, showsDivider: true)
+                        .frame(width: available * 1.26 / 3.11, alignment: .leading)
+                    tokenDetail("输出", value: presentation.outputTokens, showsDivider: true)
+                        .frame(width: available * 0.85 / 3.11, alignment: .leading)
+                }
+            }
+            .frame(height: 34.6)
+            .padding(.top, 8)
         }
+        .padding(.horizontal, 13)
+        .padding(.top, 11)
+        .padding(.bottom, 12)
+        .background(colors.surface, in: RoundedRectangle(cornerRadius: 11))
     }
 
     private var todayMetricHeight: CGFloat {
@@ -400,12 +411,9 @@ struct OverviewView: View {
         if !quota.segments.isEmpty && quota.segments.count <= 2 {
             return quota.isPartial ? 60 : 46
         }
+        if quota.segments.count > 2 { return 46 }
         if quota.isPartial && quota.segments.isEmpty { return 40 }
-        return style.hasAccentCards ? 36 : 31.86
-    }
-
-    private var todayQuotaColor: Color {
-        colors.accentText ?? colors.accent
+        return 31.86
     }
 
     @ViewBuilder
@@ -414,19 +422,19 @@ struct OverviewView: View {
         if quota.segments.isEmpty {
             VStack(alignment: style.hasAccentCards ? .leading : .trailing, spacing: 1) {
                 Text(quota.percent == "--" ? "—" : quota.percent)
-                    .font(.system(size: style.hasAccentCards ? (quota.isPartial ? 20 : 30) : 18, weight: style.hasAccentCards ? .semibold : .medium))
+                    .font(.system(size: style == .aurora ? 24 : 18, weight: style.hasAccentCards ? .semibold : .medium))
                     .monospacedDigit()
                     .lineLimit(1)
                     .minimumScaleFactor(0.65)
-                    .foregroundStyle(quota.percent == "--" ? colors.secondaryText : todayQuotaColor)
+                    .foregroundStyle(quota.percent == "--" ? colors.secondaryText : colors.accent)
                 if quota.isPartial {
                     Text("已记录 · 记录不完整")
-                        .font(.system(size: 11))
-                        .foregroundStyle(colors.secondaryText)
+                        .font(.system(size: style == .aurora ? 10 : 11))
+                        .foregroundStyle(style == .aurora ? colors.warning : colors.secondaryText)
                 }
             }
         } else if quota.segments.count <= 2 {
-            HStack(alignment: .top, spacing: 10) {
+            HStack(alignment: .top, spacing: style == .aurora ? 8 : 10) {
                 ForEach(quota.segments) { segment in
                     VStack(alignment: .leading, spacing: 2) {
                         Text(segment.percent == "记录不足" ? "—" : segment.percent)
@@ -434,14 +442,15 @@ struct OverviewView: View {
                             .monospacedDigit()
                             .lineLimit(1)
                             .minimumScaleFactor(0.75)
-                            .foregroundStyle(segment.percent == "记录不足" ? colors.secondaryText : todayQuotaColor)
+                            .foregroundStyle(segment.percent == "记录不足" ? colors.secondaryText : colors.accent)
                         Text(segment.label)
-                            .font(.system(size: 11))
+                            .font(.system(size: style == .aurora ? 9 : 11))
                             .foregroundStyle(colors.secondaryText)
+                            .lineLimit(1)
                         if segment.isPartial {
                             Text("已记录")
-                                .font(.system(size: 10))
-                                .foregroundStyle(colors.secondaryText)
+                                .font(.system(size: style == .aurora ? 9 : 10))
+                                .foregroundStyle(style == .aurora ? colors.warning : colors.secondaryText)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -449,13 +458,18 @@ struct OverviewView: View {
             }
             .frame(minWidth: quota.segments.count == 2 ? 116 : 58)
         } else {
-            HStack(spacing: 4) {
-                Text("分 \(quota.segments.count) 段")
-                    .font(.system(size: 13, weight: .medium))
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 9))
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(alignment: .firstTextBaseline, spacing: 7) {
+                    Text("\(quota.segments.count) 段")
+                        .font(.system(size: 24, weight: .semibold))
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .medium))
+                }
+                .foregroundStyle(colors.accent)
+                Text(quota.isPartial ? "记录不完整" : "按重置分段")
+                    .font(.system(size: 10))
+                    .foregroundStyle(quota.isPartial ? colors.warning : colors.secondaryText)
             }
-            .foregroundStyle(colors.accent)
         }
     }
 
@@ -514,55 +528,30 @@ struct OverviewView: View {
         presentation.currentCycleStatus == "数据可能已过期" ? colors.warning : colors.secondaryText
     }
 
-    @ViewBuilder
     private var cycleSection: some View {
-        if style.hasAccentCards {
-            VStack(spacing: 4) {
-                HStack {
-                    Text("当前周期 Token")
-                        .font(.system(size: 11, weight: .medium))
-                    Spacer(minLength: 8)
-                    Text(presentation.currentCycleTokens)
-                        .font(.system(size: 17, weight: .semibold))
-                        .monospacedDigit()
-                }
-                HStack {
-                    Text(presentation.currentCycleStatus)
-                        .foregroundStyle(cycleStatusColor)
-                    Spacer(minLength: 8)
-                    cycleQuota
-                }
-                .font(.system(size: 11))
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("当前周期 Token")
+                    .font(.system(size: 11, weight: .medium))
+                    .frame(height: 15.4)
+                Text(presentation.currentCycleStatus)
+                    .font(.system(size: 11))
+                    .foregroundStyle(cycleStatusColor)
+                    .frame(height: 15.4)
+            }
+            Spacer()
+            VStack(alignment: .trailing, spacing: 1) {
+                Text(presentation.currentCycleTokens)
+                    .font(.system(size: 18, weight: .medium))
+                    .tracking(-0.5)
+                    .monospacedDigit()
+                cycleQuota.font(.system(size: 11))
             }
             .lineLimit(1)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .modifier(UsageAccentCard(style: style))
-        } else {
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("当前周期 Token")
-                        .font(.system(size: 11, weight: .medium))
-                        .frame(height: 15.4)
-                    Text(presentation.currentCycleStatus)
-                        .font(.system(size: 11))
-                        .foregroundStyle(cycleStatusColor)
-                        .frame(height: 15.4)
-                }
-                Spacer()
-                VStack(alignment: .trailing, spacing: 1) {
-                    Text(presentation.currentCycleTokens)
-                        .font(.system(size: 18, weight: .medium))
-                        .tracking(-0.5)
-                        .monospacedDigit()
-                    cycleQuota.font(.system(size: 11))
-                }
-                .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
-            }
-            .padding(.horizontal, 2)
-            .frame(height: 36)
+            .fixedSize(horizontal: true, vertical: false)
         }
+        .padding(.horizontal, 2)
+        .frame(height: 36)
     }
 
     private var cycleQuota: some View {
@@ -596,11 +585,14 @@ struct OverviewView: View {
         .font(.system(size: 11))
         .foregroundStyle(colors.secondaryText)
         .frame(height: 15.4)
-        .overlay(alignment: .top) {
-            if style == .neon {
-                Rectangle().fill(colors.border.opacity(0.7)).frame(height: 1).offset(y: -6)
-            }
-        }
+    }
+}
+
+private struct OverviewContentHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
 
@@ -634,8 +626,8 @@ private struct NavigationTileButton: View {
         .overlay {
             if style.hasAccentCards {
                 RoundedRectangle(cornerRadius: 11)
-                    .strokeBorder(colors.accentGradient, lineWidth: 1)
-                    .opacity(isHovering ? 1 : (style == .neon ? 0.75 : 0.2))
+                    .strokeBorder(colors.accent, lineWidth: 1)
+                    .opacity(isHovering ? 1 : 0.2)
             } else {
                 RoundedRectangle(cornerRadius: 8)
                     .strokeBorder(isHovering ? colors.accent : colors.border, lineWidth: 1)
@@ -659,8 +651,8 @@ private struct NavigationTileButtonStyle: ButtonStyle {
                     .overlay {
                         if style.hasAccentCards {
                             RoundedRectangle(cornerRadius: 11)
-                                .fill(colors.accentGradient)
-                                .opacity(style == .neon ? 0.12 : 0.045)
+                                .fill(colors.accent)
+                                .opacity(0.045)
                         }
                     }
             }
@@ -678,19 +670,6 @@ private struct NavigationTileButtonStyle: ButtonStyle {
         style: .constant(.orbit)
     )
     .modifier(UsagePopoverSurface(style: .orbit))
-    .preferredColorScheme(.dark)
-}
-
-#Preview("霓光仪表") {
-    OverviewView(
-        presentation: OverviewPresentation(
-            snapshot: UsagePreviewData.fullSnapshot,
-            now: UsagePreviewData.now,
-            timeZone: UsagePreviewData.timeZone
-        ),
-        style: .constant(.neon)
-    )
-    .modifier(UsagePopoverSurface(style: .neon))
     .preferredColorScheme(.dark)
 }
 

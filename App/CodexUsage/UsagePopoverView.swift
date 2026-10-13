@@ -17,7 +17,8 @@ struct UsagePopoverView: View {
         styleDefaults: UserDefaults = .standard
     ) {
         self.viewModel = viewModel
-        if styleDefaults.string(forKey: UsageStyle.storageKey) == "native" {
+        if let savedStyle = styleDefaults.string(forKey: UsageStyle.storageKey),
+           savedStyle == "native" || savedStyle == "neon" {
             styleDefaults.set(UsageStyle.aurora.rawValue, forKey: UsageStyle.storageKey)
         }
         _style = AppStorage(

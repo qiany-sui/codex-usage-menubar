@@ -6,6 +6,10 @@ struct CycleHistoryView: View {
     let presentation: CycleHistoryPresentation
     let onBack: () -> Void
 
+    private let tokenColumnWidth: CGFloat = 74
+    private let quotaColumnWidth: CGFloat = 64
+    private let rowHorizontalPadding: CGFloat = 8
+    private let scrollbarGutter: CGFloat = 14
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -14,18 +18,18 @@ struct CycleHistoryView: View {
                 emptyState
             } else {
                 VStack(spacing: 4) {
-                    HStack(spacing: 10) {
+                    HStack(alignment: .firstTextBaseline, spacing: 10) {
                         Text("周期")
                             .frame(maxWidth: .infinity, alignment: .leading)
                         Text("Token")
-                            .frame(width: 74, alignment: .trailing)
+                            .frame(width: tokenColumnWidth, alignment: .leading)
                         Text("额度已用")
-                            .frame(width: 64, alignment: .trailing)
+                            .frame(width: quotaColumnWidth, alignment: .leading)
                     }
                     .font(.system(size: 11))
                     .foregroundStyle(colors.secondaryText)
-                    .padding(.horizontal, 8)
-                    .padding(.trailing, 14)
+                    .padding(.horizontal, rowHorizontalPadding)
+                    .padding(.trailing, scrollbarGutter)
                     .frame(height: 14)
 
                     ScrollView {
@@ -35,14 +39,14 @@ struct CycleHistoryView: View {
                                     .padding(.bottom, entry.isCurrent ? 3 : 0)
                             }
                         }
-                        .padding(.trailing, 14)
+                        .padding(.trailing, scrollbarGutter)
                     }
 
-                    Text("最后记录表示记录不完整；— 表示额度记录不足")
+                    Text("记录不完整时显示最后记录；— 表示额度记录不足")
                         .font(.system(size: 11))
                         .foregroundStyle(colors.secondaryText)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 8)
+                        .padding(.horizontal, rowHorizontalPadding)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -62,6 +66,7 @@ struct CycleHistoryView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .frame(width: 14)
             .accessibilityLabel("返回概览")
 
             Text("历史周期")
@@ -78,12 +83,14 @@ struct CycleHistoryView: View {
             }
         }
         .frame(height: 32)
+        .padding(.horizontal, rowHorizontalPadding)
+        .padding(.trailing, scrollbarGutter)
     }
 
     private func cycleRow(_ entry: CycleEntryPresentation) -> some View {
         VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 10) {
-                HStack(spacing: 5) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                HStack(alignment: .firstTextBaseline, spacing: 5) {
                     Text(entry.range)
                     if entry.isCurrent {
                         Text("当前")
@@ -96,29 +103,28 @@ struct CycleHistoryView: View {
                 Text(entry.formattedTokens)
                     .font(.system(size: 14, weight: .medium))
                     .monospacedDigit()
-                    .frame(width: 74, alignment: .trailing)
+                    .frame(width: tokenColumnWidth, alignment: .leading)
                 Text(entry.quotaPercent == "--" ? "—" : entry.quotaPercent)
                     .font(.system(size: 13, weight: .medium))
                     .monospacedDigit()
                     .foregroundStyle(entry.isCurrent ? colors.accent : colors.primaryText)
-                    .frame(width: 64, alignment: .trailing)
+                    .frame(width: quotaColumnWidth, alignment: .leading)
                     .accessibilityLabel(entry.quotaUsage)
                     .help(entry.quotaHelp)
             }
-            HStack(alignment: .top, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Text(entry.statusLabel + (entry.boundaryIsEstimated ? " · 边界估算" : ""))
                     .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 0)
-                if entry.quotaIsPartial {
-                    Text("最后记录 · 不完整")
-                        .foregroundStyle(colors.warning)
-                        .help(entry.quotaHelp)
-                }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text(entry.quotaIsPartial ? "记录不完整" : "")
+                    .frame(width: quotaColumnWidth, alignment: .leading)
+                    .foregroundStyle(colors.warning)
+                    .help(entry.quotaHelp)
             }
             .font(.system(size: 11))
             .foregroundStyle(colors.secondaryText)
         }
-        .padding(.horizontal, 8)
+        .padding(.horizontal, rowHorizontalPadding)
         .padding(.vertical, 8)
         .background(entry.isCurrent ? colors.tint : .clear)
         .clipShape(RoundedRectangle(cornerRadius: 7))

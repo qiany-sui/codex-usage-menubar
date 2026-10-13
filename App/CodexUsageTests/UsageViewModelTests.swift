@@ -77,8 +77,8 @@ final class UsageViewModelTests: XCTestCase {
         XCTAssertEqual(defaults.string(forKey: "interfaceStyle"), "aurora")
     }
 
-    func testPopoverRestoresAndSavesApprovedNewStyles() {
-        for rawValue in ["neon", "aurora"] {
+    func testPopoverRestoresAndSavesAvailableStyles() {
+        for rawValue in ["orbit", "aurora"] {
             let defaults = isolatedStyleDefaults()
             defaults.set(rawValue, forKey: "interfaceStyle")
             let fixture = ViewModelFixture()
@@ -111,6 +111,19 @@ final class UsageViewModelTests: XCTestCase {
         XCTAssertEqual(popover.style, .aurora)
         XCTAssertEqual(defaults.string(forKey: UsageStyle.storageKey), "aurora")
         XCTAssertFalse(UsageStyle.allCases.contains { $0.rawValue == "native" })
+    }
+
+    func testRemovedNeonPreferenceMigratesToAurora() {
+        let defaults = isolatedStyleDefaults()
+        defaults.set("neon", forKey: UsageStyle.storageKey)
+        let popover = UsagePopoverView(
+            viewModel: ViewModelFixture().viewModel,
+            styleDefaults: defaults
+        )
+
+        XCTAssertEqual(popover.style, .aurora)
+        XCTAssertEqual(defaults.string(forKey: UsageStyle.storageKey), "aurora")
+        XCTAssertEqual(UsageStyle.allCases.map(\.rawValue), ["orbit", "aurora"])
     }
 
     private func isolatedStyleDefaults() -> UserDefaults {

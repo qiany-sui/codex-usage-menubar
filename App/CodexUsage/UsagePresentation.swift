@@ -156,6 +156,11 @@ struct DayQuotaPresentation: Equatable {
     let resetLabel: String?
     let help: String
     let isPartial: Bool
+    private let segmentDetails: String
+
+    var details: String {
+        segments.isEmpty ? summary : segmentDetails
+    }
 
     var summary: String {
         if segments.isEmpty {
@@ -205,11 +210,12 @@ struct DayQuotaPresentation: Equatable {
         isPartial = parts.isEmpty
             ? day.quotaConsumedPercent == nil && day.recordedQuotaConsumedPercent != nil
             : parts.contains(where: \.isPartial)
+        segmentDetails = zip(rawSegments, parts).map { segment, part in
+            "\(preciseTime.string(from: segment.startsAt))–\(preciseTime.string(from: segment.endsAt)) \(part.label)：\(part.isPartial ? "已记录 " : "")\(part.percent)"
+        }.joined(separator: "\n")
         help = (parts.isEmpty
             ? "当天官方已用额度的增量；-- 表示无可确认的消耗记录。Token 校准状态不代表额度记录完整。"
-            : zip(rawSegments, parts).map { segment, part in
-                "\(preciseTime.string(from: segment.startsAt))–\(preciseTime.string(from: segment.endsAt)) \(part.label)：\(part.isPartial ? "已记录 " : "")\(part.percent)"
-            }.joined(separator: "\n") + "\n每段按各自周期额度计算；Token 为全天总量。")
+            : segmentDetails + "\n每段按各自周期额度计算；Token 为全天总量。")
             + (isPartial ? "\n记录不完整：已记录消耗仅包含可确认的增量，不代表整个时间段的最终消耗。" : "")
         segments = parts
         percent = parts.isEmpty ? UsageFormatters.quotaConsumedPercent(
@@ -231,6 +237,7 @@ struct TrendDayPresentation: Equatable, Identifiable {
     let quotaSegments: [TrendQuotaSegmentPresentation]
     let resetLabel: String?
     let quotaHelp: String
+    let quotaDetails: String
     let quotaIsPartial: Bool
 }
 
@@ -255,6 +262,7 @@ struct TrendPresentation: Equatable {
                 quotaSegments: quota.segments,
                 resetLabel: quota.resetLabel,
                 quotaHelp: quota.help,
+                quotaDetails: quota.details,
                 quotaIsPartial: quota.isPartial
             )
         }

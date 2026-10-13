@@ -186,6 +186,74 @@ final class UsagePresentationTests: XCTestCase {
         XCTAssertTrue(quota.help.contains("记录不完整"))
     }
 
+    func testTrendQuotaDetailsKeepPreciseSegmentRecordsWithoutGeneralExplanation() throws {
+        let base = try sampleSnapshot()
+        let start = try fixedDate("2026-10-13T00:10:11Z")
+        let firstReset = try fixedDate("2026-10-13T00:30:22Z")
+        let secondReset = try fixedDate("2026-10-13T01:40:33Z")
+        let end = try fixedDate("2026-10-13T02:50:44Z")
+        let day = UsageDay(
+            day: LocalDay(year: 2026, month: 10, day: 13), localUsage: .zero,
+            officialTokens: nil, displayedTokens: 0, status: .localLive,
+            quotaSegments: [
+                QuotaConsumptionSegment(
+                    startsAt: start, endsAt: firstReset, consumedPercent: nil,
+                    startsWithReset: false
+                ),
+                QuotaConsumptionSegment(
+                    startsAt: firstReset, endsAt: secondReset, consumedPercent: nil,
+                    startsWithReset: true, recordedConsumedPercent: 30
+                ),
+                QuotaConsumptionSegment(
+                    startsAt: secondReset, endsAt: end, consumedPercent: 1,
+                    startsWithReset: true
+                )
+            ]
+        )
+        let quota = DayQuotaPresentation(day: day, timeZone: timeZone)
+        let expected = """
+        10/13 08:10:11–10/13 08:30:22 第1段：记录不足
+        10/13 08:30:22–10/13 09:40:33 第2段：已记录 30%
+        10/13 09:40:33–10/13 10:50:44 第3段：1%
+        """
+        XCTAssertEqual(quota.details, expected)
+        XCTAssertTrue(quota.help.contains("每段按各自周期额度计算；Token 为全天总量。"))
+        XCTAssertTrue(quota.help.contains("不代表整个时间段的最终消耗"))
+
+        let snapshot = UsageSnapshot(
+            quota: base.quota, today: day, currentCycle: base.currentCycle,
+            recentDays: [day], cycleHistory: [], lastUpdatedAt: end, status: .localLive
+        )
+        let row = try XCTUnwrap(TrendPresentation(snapshot: snapshot, timeZone: timeZone).days.first)
+        XCTAssertEqual(row.quotaDetails, expected)
+        XCTAssertEqual(row.quotaHelp, quota.help)
+        XCTAssertTrue(row.quotaIsPartial)
+    }
+
+    func testDailyQuotaDetailsPreserveCompletePartialAndMissingUnsegmentedStates() throws {
+        let cases: [(Double?, Double?, String)] = [
+            (12, nil, "额度消耗 12%"),
+            (0, nil, "额度消耗 0%"),
+            (nil, 30, "已记录消耗 30%（记录不完整）"),
+            (nil, nil, "额度记录不足")
+        ]
+        let base = try sampleSnapshot()
+        for (complete, recorded, expected) in cases {
+            let day = UsageDay(
+                day: base.today.day, localUsage: .zero, officialTokens: nil,
+                displayedTokens: 0, status: .localLive,
+                quotaConsumedPercent: complete, recordedQuotaConsumedPercent: recorded
+            )
+            XCTAssertEqual(DayQuotaPresentation(day: day, timeZone: timeZone).details, expected)
+            let snapshot = UsageSnapshot(
+                quota: base.quota, today: day, currentCycle: base.currentCycle,
+                recentDays: [day], cycleHistory: [], lastUpdatedAt: base.lastUpdatedAt, status: .localLive
+            )
+            let row = try XCTUnwrap(TrendPresentation(snapshot: snapshot, timeZone: timeZone).days.first)
+            XCTAssertEqual(row.quotaDetails, expected)
+        }
+    }
+
     func testHistoricalPartialQuotaShowsLastRecordedValueAndTimestamp() throws {
         let base = try sampleSnapshot()
         let old = try XCTUnwrap(base.cycleHistory.first)

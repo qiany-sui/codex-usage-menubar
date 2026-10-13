@@ -9,19 +9,17 @@ enum UsageTheme {
 
 enum UsageStyle: String, CaseIterable, Identifiable {
     case orbit
-    case neon
     case aurora
 
     static let storageKey = "interfaceStyle"
 
     var id: Self { self }
 
-    var hasAccentCards: Bool { self == .neon || self == .aurora }
+    var hasAccentCards: Bool { self == .aurora }
 
     var title: String {
         switch self {
         case .orbit: "环形仪表"
-        case .neon: "霓光仪表"
         case .aurora: "极光卡片"
         }
     }
@@ -29,7 +27,6 @@ enum UsageStyle: String, CaseIterable, Identifiable {
     var colors: UsageColors {
         switch self {
         case .orbit: .orbit
-        case .neon: .neon
         case .aurora: .aurora
         }
     }
@@ -44,14 +41,6 @@ struct UsageColors {
     let border: Color
     var accent: Color
     var tint: Color
-    var accentEnd: Color? = nil
-    var accentMiddle: Color? = nil
-    var accentText: Color? = nil
-
-    var accentGradient: LinearGradient {
-        LinearGradient(colors: [accent, accentMiddle ?? accent, accentEnd ?? accent], startPoint: .topLeading, endPoint: .bottomTrailing)
-    }
-
     let good = UsageColors.adaptive(light: 0x28775e, dark: 0x80c7ab)
     let warning = UsageColors.adaptive(light: 0x9b5a18, dark: 0xeaba7d)
     let warningTint = UsageColors.adaptive(light: 0xf8ebdc, dark: 0x473928)
@@ -66,20 +55,6 @@ struct UsageColors {
         border: adaptive(light: 0xe1dce9, dark: 0x403b49),
         accent: adaptive(light: 0x7952b8, dark: 0xbb9de9),
         tint: adaptive(light: 0xeee5fa, dark: 0x453754)
-    )
-
-    static let neon = UsageColors(
-        background: adaptive(light: 0xf0f3fc, dark: 0x0f1829),
-        surface: adaptive(light: 0xffffff, dark: 0x111b2c),
-        soft: adaptive(light: 0xdce2f0, dark: 0x354255),
-        primaryText: adaptive(light: 0x202c45, dark: 0xf6f8ff),
-        secondaryText: adaptive(light: 0x596982, dark: 0xb9c8e2),
-        border: adaptive(light: 0xc4cee5, dark: 0x39516c),
-        accent: adaptive(light: 0x087f9b, dark: 0x24dfff),
-        tint: adaptive(light: 0xe0e8fb, dark: 0x273160),
-        accentEnd: adaptive(light: 0x8454cc, dark: 0xb46aff),
-        accentMiddle: adaptive(light: 0x4662cc, dark: 0x4d6bff),
-        accentText: adaptive(light: 0x087f9b, dark: 0x91f3ff)
     )
 
     static let aurora = UsageColors(
@@ -97,9 +72,6 @@ struct UsageColors {
         var colors = self
         if isLow {
             colors.accent = warning
-            colors.accentEnd = warning
-            colors.accentMiddle = warning
-            colors.accentText = warning
             colors.tint = warningTint
         }
         return colors
@@ -136,13 +108,13 @@ struct UsagePopoverSurface: ViewModifier {
                 colors.background
                 if style.hasAccentCards {
                     RadialGradient(
-                        colors: [colors.tint.opacity(style == .neon ? 0.45 : 0.12), .clear],
+                        colors: [colors.tint.opacity(0.12), .clear],
                         center: .topTrailing,
                         startRadius: 0,
                         endRadius: 390
                     )
                     RadialGradient(
-                        colors: [colors.accent.opacity(style == .neon ? 0.09 : 0.035), .clear],
+                        colors: [colors.accent.opacity(0.035), .clear],
                         center: .bottomLeading,
                         startRadius: 0,
                         endRadius: 260
