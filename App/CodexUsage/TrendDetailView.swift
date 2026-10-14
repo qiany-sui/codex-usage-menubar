@@ -4,7 +4,7 @@ import UsageCore
 struct TrendDetailView: View {
     @Environment(\.usageColors) private var colors
     @State private var selectedDay: LocalDay?
-    @State private var expandedDay: LocalDay?
+    @State private var detailDay: LocalDay?
     @State private var listContentWidth: CGFloat?
     @State private var showsQuotaExplanation = false
 
@@ -41,27 +41,20 @@ struct TrendDetailView: View {
                 tableHeader
                     .frame(width: listContentWidth, alignment: .leading)
                     .padding(.bottom, 6)
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        dayRows
-                            .background {
-                                // 测量不含滚动条留白的行宽，让固定栏与列表保持对齐。
-                                GeometryReader { geometry in
-                                    Color.clear.preference(key: TrendListWidthKey.self, value: geometry.size.width)
-                                }
+                ScrollView {
+                    dayRows
+                        .background {
+                            // 测量不含滚动条留白的行宽，让固定栏与列表保持对齐。
+                            GeometryReader { geometry in
+                                Color.clear.preference(key: TrendListWidthKey.self, value: geometry.size.width)
                             }
-                            .padding(.trailing, scrollbarGutter)
-                    }
-                    .clipped()
-                    .onChange(of: expandedDay) { day in
-                        if let day {
-                            proxy.scrollTo(day, anchor: .top)
                         }
-                    }
+                        .padding(.trailing, scrollbarGutter)
                 }
+                .clipped()
                 HStack(spacing: 5) {
                     Image(systemName: "info.circle")
-                    Text("点按日期查看校准状态与重置详情")
+                    Text("点按日期查看当日详情")
                 }
                 .font(.system(size: 10))
                 .foregroundStyle(colors.secondaryText)
@@ -185,7 +178,7 @@ struct TrendDetailView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     Button {
                         selectedDay = day.day
-                        expandedDay = expandedDay == day.day ? nil : day.day
+                        detailDay = day.day
                     } label: {
                         HStack(spacing: columnSpacing) {
                             Text(day.label)
@@ -221,7 +214,7 @@ struct TrendDetailView: View {
                             }
                             .frame(width: quotaColumnWidth, alignment: .leading)
                             .help(day.quotaHelp)
-                            Image(systemName: expandedDay == day.day ? "chevron.down" : "chevron.right")
+                            Image(systemName: "chevron.right")
                                 .font(.system(size: 8, weight: .medium))
                                 .foregroundStyle(colors.secondaryText.opacity(0.65))
                                 .frame(width: disclosureWidth)
@@ -235,10 +228,11 @@ struct TrendDetailView: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityAddTraits(day.day == activeDay ? .isSelected : [])
-                    .accessibilityValue(expandedDay == day.day ? "已展开" : "已收起")
-                    .accessibilityHint("显示或收起当日用量、校准状态和重置详情")
-
-                    if expandedDay == day.day {
+                    .accessibilityHint("打开当日用量、校准状态和重置详情")
+                    .popover(isPresented: Binding(
+                        get: { detailDay == day.day },
+                        set: { if !$0, detailDay == day.day { detailDay = nil } }
+                    ), arrowEdge: .trailing) {
                         dayDetails(day)
                     }
                 }
@@ -248,7 +242,41 @@ struct TrendDetailView: View {
     }
 
     private func dayDetails(_ day: TrendDayPresentation) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("\(day.label) 用量详情")
+                    .font(.system(size: 13, weight: .semibold))
+                Spacer(minLength: 8)
+                Button { detailDay = nil } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(colors.secondaryText)
+                        .frame(width: 24, height: 24)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("关闭当日详情")
+            }
+            Rectangle().fill(colors.border.opacity(0.6)).frame(height: 1)
+            // 普通日期按内容收紧，多次重置时仅让详情滚动，七天列表保持原位。
+            ViewThatFits(in: .vertical) {
+                dayDetailContent(day)
+                ScrollView {
+                    dayDetailContent(day)
+                        .padding(.trailing, 12)
+                }
+            }
+            .frame(maxHeight: 280)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .foregroundStyle(colors.primaryText)
+        .padding(14)
+        .frame(width: 300, alignment: .leading)
+        .background(colors.background)
+    }
+
+    private func dayDetailContent(_ day: TrendDayPresentation) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
                 Text("完整 Token")
                 Spacer(minLength: 4)
@@ -258,7 +286,7 @@ struct TrendDetailView: View {
             }
             .foregroundStyle(colors.primaryText)
             HStack(alignment: .firstTextBaseline) {
-                Text("校准状态")
+                Text("Token 校准状态")
                 Spacer(minLength: 4)
                 Text(day.statusLabel)
                     .foregroundStyle(statusColor(day.status))
@@ -274,11 +302,8 @@ struct TrendDetailView: View {
         }
         .font(.system(size: 11))
         .foregroundStyle(colors.secondaryText)
-        .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(colors.surface, in: RoundedRectangle(cornerRadius: 7))
-        .padding(.horizontal, rowHorizontalPadding)
-        .padding(.bottom, 6)
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     private var emptyState: some View {
