@@ -125,10 +125,12 @@ public struct CycleTracker: Sendable {
                 let consumedThenReset = difference > 0
                     && hasConsumedQuota && observation.usedPercent == 0
                 // 重置后已用额度仍为 0 时，起点还会随首次使用修正；这些读数属于同一次重置。
-                // 不跨越离线空档推断两次重置属于同一次。
+                // 采集可能延迟；修正起点紧接上次记录时，不能仅因晚读到就拆成新周期。
+                let boundaryGap = observation.startsAt.timeIntervalSince(previous.fetchedAt)
                 let pendingStartCorrection = !hasConsumedQuota && difference > 0
                     && observation.startsAt < previous.resetsAt
-                    && observation.fetchedAt.timeIntervalSince(previous.fetchedAt) <= 600
+                    && (observation.fetchedAt.timeIntervalSince(previous.fetchedAt) <= 600
+                        || (0...600).contains(boundaryGap))
                 continuesReset = !consumedThenReset
                     && (abs(difference) <= Self.boundaryTolerance || pendingStartCorrection)
             }

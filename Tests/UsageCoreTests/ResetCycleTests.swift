@@ -2,6 +2,68 @@ import XCTest
 @testable import UsageCore
 
 final class ResetCycleTests: XCTestCase {
+    func testDelayedReadingRepairsOctober15ResetFragments() async throws {
+        let previous = try date("2026-10-13T13:40:02+08:00")
+        let start = try date("2026-10-15T14:17:37+08:00")
+        let pending = try date("2026-10-15T14:23:02+08:00")
+        let settled = try date("2026-10-15T14:24:43+08:00")
+        let end = try date("2026-10-22T14:24:43+08:00")
+        let events = [
+            storedEvent(at: start.addingTimeInterval(-10), input: 100, output: 20),
+            storedEvent(at: start.addingTimeInterval(10), input: 7, output: 5),
+            storedEvent(at: settled.addingTimeInterval(10), input: 11, output: 3)
+        ]
+        for restoreHistory in [false, true] {
+            for currentUsed in [0.0, 1.0] {
+                let records = [
+                    quota(start: previous, used: 44, fetchedAt: try date("2026-10-15T14:12:48+08:00")),
+                    quota(start: start, used: 0, fetchedAt: try date("2026-10-15T14:17:30+08:00")),
+                    quota(start: pending, used: 0, fetchedAt: try date("2026-10-15T14:22:55+08:00")),
+                    quota(start: settled, used: currentUsed, fetchedAt: try date("2026-10-15T14:38:54+08:00"))
+                ]
+                let cycles = try await refresh(
+                    records: records,
+                    existing: restoreHistory ? [
+                        cycle(previous, start), cycle(start, settled), cycle(settled, end)
+                    ] : [],
+                    events: events, restoreHistory: restoreHistory
+                )
+                let observed = cycles.filter { !$0.boundaryIsEstimated }
+                XCTAssertEqual(observed.map(\.startsAt), [previous, start])
+                XCTAssertEqual(observed.map(\.endsAt), [start, end])
+                XCTAssertEqual(observed.map(\.displayedTokens), [120, 26])
+
+                let current = try XCTUnwrap(records.last)
+                var calendar = Calendar(identifier: .gregorian)
+                calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "Asia/Shanghai"))
+                let snapshot = UsageReconciler().snapshot(
+                    now: current.fetchedAt, calendar: calendar, quota: current,
+                    events: events, officialDays: [], cycles: cycles,
+                    lastUpdatedAt: current.fetchedAt, quotaHistory: records
+                )
+                XCTAssertEqual(snapshot.currentCycle?.startsAt, start)
+                XCTAssertEqual(snapshot.currentCycle?.quotaUsedPercent, currentUsed)
+                XCTAssertEqual(snapshot.cycleHistory.first?.quotaUsedPercent, 44)
+                XCTAssertEqual(snapshot.today.quotaSegments?.filter(\.startsWithReset).map(\.startsAt), [start])
+            }
+        }
+    }
+
+    func testDelayedReadingDoesNotMergeABoundaryOutsideTheObservedResetWindow() async throws {
+        let start = try date("2026-10-15T14:17:37+08:00")
+        for (lastReadOffset, nextStartOffset): (TimeInterval, TimeInterval) in [(0, 601), (3_600, 64)] {
+            let next = start.addingTimeInterval(nextStartOffset)
+            let cycles = try await refresh(
+                records: [
+                    quota(start: start, used: 0, fetchedAt: start.addingTimeInterval(lastReadOffset)),
+                    quota(start: next, used: 0, fetchedAt: start.addingTimeInterval(86_400))
+                ],
+                events: []
+            )
+            XCTAssertEqual(cycles.filter { !$0.boundaryIsEstimated }.map(\.startsAt), [start, next])
+        }
+    }
+
     func testResetCardBoundaryCorrectionsDoNotCreateEmptyCycles() async throws {
         let start = try date("2026-09-09T16:28:52+08:00")
         let previousStart = try date("2026-09-08T10:31:40+08:00")
