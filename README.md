@@ -87,8 +87,10 @@ rtk xcodebuild test -project App/CodexUsage.xcodeproj -scheme CodexUsage -config
 
 ```bash
 rtk xcodebuild build -project App/CodexUsage.xcodeproj -scheme CodexUsage -configuration Debug -destination 'platform=macOS,arch=arm64' -derivedDataPath DerivedData/Debug CODE_SIGNING_ALLOWED=NO
-rtk xcodebuild build -project App/CodexUsage.xcodeproj -scheme CodexUsage -configuration Release -destination 'platform=macOS,arch=arm64' -derivedDataPath DerivedData/Release CODE_SIGNING_ALLOWED=NO
+rtk xcodebuild build -project App/CodexUsage.xcodeproj -scheme CodexUsage -configuration Release -destination 'platform=macOS,arch=arm64' -derivedDataPath DerivedData/Unsigned-Release CODE_SIGNING_ALLOWED=NO
 ```
+
+签名交付与无签名 Release 构建使用不同输出目录，避免覆盖待安装产物；交付规则见 [AGENTS.md](AGENTS.md)。
 
 ## 数据位置与发布边界
 
