@@ -276,7 +276,121 @@ final class UsagePresentationTests: XCTestCase {
         XCTAssertEqual(entry.quotaPercent, "76%")
         XCTAssertEqual(entry.quotaUsage, "最后记录 76%（记录不完整）")
         XCTAssertTrue(entry.quotaIsPartial)
-        XCTAssertTrue(entry.quotaHelp.contains("9/11 23:09"))
+        XCTAssertEqual(entry.quotaHelp, "最后记录于 2026/9/11 23:09：76%。记录不完整，周期结束时的最终已用额度未知。")
+    }
+
+    func testCurrentCycleDetailsIncludeItsOfficialQuotaReadTime() throws {
+        let base = try sampleSnapshot()
+        let current = try XCTUnwrap(base.currentCycle)
+        let quota = try XCTUnwrap(base.quota)
+        let cycle = QuotaCycle(
+            startsAt: current.startsAt, endsAt: current.endsAt, usage: current.usage,
+            displayedTokens: current.displayedTokens, status: current.status,
+            boundaryIsEstimated: false, quotaUsedPercent: quota.usedPercent
+        )
+        let snapshot = UsageSnapshot(
+            quota: quota, today: base.today, currentCycle: cycle,
+            recentDays: base.recentDays, cycleHistory: base.cycleHistory,
+            lastUpdatedAt: base.lastUpdatedAt, status: base.status
+        )
+        let entry = try XCTUnwrap(CycleHistoryPresentation(snapshot: snapshot, timeZone: timeZone).entries.first)
+
+        XCTAssertEqual(entry.quotaHelp, "当前周期累计已用额度，来自最近一次官方额度记录。采集于 2026/9/1 16:00。")
+        XCTAssertFalse(entry.quotaIsPartial)
+    }
+
+    func testHistoricalCycleWithOnlyLocalTokensUsesLocalStatisticsLabel() throws {
+        let base = try sampleSnapshot()
+        let old = try XCTUnwrap(base.cycleHistory.first)
+        let cycle = QuotaCycle(
+            startsAt: old.startsAt, endsAt: old.endsAt, usage: old.usage,
+            displayedTokens: old.displayedTokens, status: .localLive,
+            boundaryIsEstimated: false
+        )
+        let snapshot = UsageSnapshot(
+            quota: base.quota, today: base.today, currentCycle: nil,
+            recentDays: base.recentDays, cycleHistory: [cycle],
+            lastUpdatedAt: base.lastUpdatedAt, status: base.status
+        )
+
+        XCTAssertEqual(CycleHistoryPresentation(snapshot: snapshot, timeZone: timeZone)
+            .entries.first?.statusLabel, "本地统计")
+    }
+
+    func testCycleDailyDetailsUseItsOwnHistoryAndExplainTokenSources() throws {
+        let base = try sampleSnapshot()
+        let start = try fixedDate("2026-08-01T04:30:01Z")
+        let midnight = try fixedDate("2026-08-01T16:00:00Z")
+        let nextMidnight = try fixedDate("2026-08-02T16:00:00Z")
+        let end = try fixedDate("2026-08-03T04:10:02Z")
+        let cycle = QuotaCycle(
+            startsAt: start, endsAt: end, usage: .zero,
+            displayedTokens: 1_234_568_000, status: .partiallyCalibrated,
+            boundaryIsEstimated: false, dailyUsage: [
+                CycleUsageDay(day: LocalDay(year: 2026, month: 8, day: 1),
+                    startsAt: start, endsAt: midnight, displayedTokens: 100,
+                    status: .localLive, quotaConsumedPercent: 0),
+                CycleUsageDay(day: LocalDay(year: 2026, month: 8, day: 2),
+                    startsAt: midnight, endsAt: nextMidnight, displayedTokens: 1_234_567_890,
+                    status: .calibrated, recordedQuotaConsumedPercent: 12),
+                CycleUsageDay(day: LocalDay(year: 2026, month: 8, day: 3),
+                    startsAt: nextMidnight, endsAt: end, displayedTokens: 10,
+                    status: .localLive)
+            ]
+        )
+        let snapshot = UsageSnapshot(
+            quota: base.quota, today: base.today, currentCycle: nil,
+            recentDays: base.recentDays, cycleHistory: [cycle],
+            lastUpdatedAt: base.lastUpdatedAt, status: base.status
+        )
+        let entry = try XCTUnwrap(CycleHistoryPresentation(snapshot: snapshot, timeZone: timeZone).entries.first)
+        let days = try XCTUnwrap(entry.dailyUsage)
+
+        XCTAssertEqual(days.map(\.dateLabel), ["8/3", "8/2", "8/1"])
+        XCTAssertEqual(days.map(\.tokens), [10, 1_234_567_890, 100])
+        XCTAssertEqual(days.reduce(0) { $0 + $1.tokens }, entry.tokens)
+        XCTAssertEqual(days.map(\.sourceLabel), ["本地统计", "官方校准", "本地统计"])
+        XCTAssertEqual(days.map(\.quotaLabel), ["—", "已记录 12%", "0%"])
+        XCTAssertEqual(days.map(\.quotaIsPartial), [false, true, false])
+        XCTAssertEqual(days.first?.timeRange, "00:00–12:10")
+        XCTAssertEqual(days.last?.timeRange, "12:30–24:00")
+        XCTAssertTrue(entry.calibrationHelp.contains("1 天采用官方 Token"))
+        XCTAssertTrue(entry.calibrationHelp.contains("2 个日内时段使用本地记录"))
+    }
+
+    func testCycleWithoutDailyRecordsDoesNotInventZeroRows() throws {
+        let entry = try XCTUnwrap(CycleHistoryPresentation(
+            snapshot: sampleSnapshot(), timeZone: timeZone
+        ).entries.first)
+
+        XCTAssertNil(entry.dailyUsage)
+        XCTAssertTrue(entry.calibrationHelp.contains("原始逐日记录不足"))
+    }
+
+    func testCycleDetailsKeepCalibratedTotalAndShowBoundariesToTheMinute() throws {
+        let base = try sampleSnapshot()
+        let cycle = QuotaCycle(
+            startsAt: try fixedDate("2026-12-31T16:00:01Z"),
+            endsAt: try fixedDate("2026-12-31T16:15:59Z"),
+            usage: TokenBreakdown(inputTokens: 700, cachedInputTokens: 280, outputTokens: 140),
+            displayedTokens: 1_234_567_890, status: .partiallyCalibrated,
+            boundaryIsEstimated: true
+        )
+        let snapshot = UsageSnapshot(
+            quota: base.quota, today: base.today, currentCycle: nil,
+            recentDays: base.recentDays, cycleHistory: [cycle],
+            lastUpdatedAt: base.lastUpdatedAt, status: base.status
+        )
+        let entry = try XCTUnwrap(CycleHistoryPresentation(snapshot: snapshot, timeZone: timeZone).entries.first)
+
+        XCTAssertEqual(entry.startTime, "2027/1/1 00:00")
+        XCTAssertEqual(entry.endTime, "2027/1/1 00:15")
+        XCTAssertEqual(entry.tokens, 1_234_567_890)
+        XCTAssertEqual(entry.statusLabel, "部分校准")
+        XCTAssertTrue(entry.boundaryIsEstimated)
+        XCTAssertFalse(entry.isCurrent)
+        XCTAssertEqual(entry.quotaUsage, "额度记录不足")
+        XCTAssertFalse(entry.quotaHelp.contains("2026/9/1"))
     }
 
     func testOverviewMapsQuotaCycleAndStaleState() throws {

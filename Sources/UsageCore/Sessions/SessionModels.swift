@@ -5,17 +5,20 @@ public struct SessionTokenRecord: Equatable, Sendable {
     public let lastUsage: TokenBreakdown?
     public let totalUsage: TokenBreakdown?
     public let schemaVariant: String
+    public let quota: QuotaSnapshot?
 
     public init(
         occurredAt: Date,
         lastUsage: TokenBreakdown?,
         totalUsage: TokenBreakdown?,
-        schemaVariant: String
+        schemaVariant: String,
+        quota: QuotaSnapshot? = nil
     ) {
         self.occurredAt = occurredAt
         self.lastUsage = lastUsage
         self.totalUsage = totalUsage
         self.schemaVariant = schemaVariant
+        self.quota = quota
     }
 }
 

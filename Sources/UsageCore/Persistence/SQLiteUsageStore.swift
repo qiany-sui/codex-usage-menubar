@@ -95,8 +95,23 @@ public actor SQLiteUsageStore: UsageStore {
                 """,
                 operation: "migrate schema"
             )
+            let columns = try connection.prepare("PRAGMA table_info(quota_snapshots);", operation: "read quota schema")
+            var hasSessionSource = false
+            while try columns.step() == .row {
+                if try columns.string(at: 1) == "is_from_session" { hasSessionSource = true }
+            }
+            if !hasSessionSource {
+                try connection.execute(
+                    """
+                    ALTER TABLE quota_snapshots ADD COLUMN is_from_session INTEGER NOT NULL DEFAULT 0;
+                    UPDATE file_cursors SET committed_offset = 0, previous_input_tokens = NULL,
+                      previous_cached_input_tokens = NULL, previous_output_tokens = NULL;
+                    """,
+                    operation: "enable session quota backfill"
+                )
+            }
             try connection.execute(
-                "PRAGMA user_version = 1;",
+                "PRAGMA user_version = 2;",
                 operation: "set schema version"
             )
         }
@@ -116,6 +131,14 @@ public actor SQLiteUsageStore: UsageStore {
         events: [StoredUsageEvent],
         cursor: FileCursor
     ) throws -> Int {
+        try ingest(events: events, quotas: [], cursor: cursor)
+    }
+
+    public func ingest(
+        events: [StoredUsageEvent],
+        quotas: [QuotaSnapshot],
+        cursor: FileCursor
+    ) throws -> Int {
         _ = try requireConnection()
         guard events.allSatisfy(isValidEvent) else {
             throw validationFailure(operation: "validate event")
@@ -123,8 +146,12 @@ public actor SQLiteUsageStore: UsageStore {
         guard isValidCursor(cursor) else {
             throw validationFailure(operation: "validate cursor")
         }
+        guard quotas.allSatisfy(isValidQuota) else {
+            throw validationFailure(operation: "validate session quota")
+        }
         return try requireConnection().transaction {
             let inserted = try insertEvents(events)
+            for quota in quotas { try saveQuota(quota, isFromSession: true) }
             try upsertCursor(cursor)
             return inserted
         }
@@ -343,6 +370,10 @@ public actor SQLiteUsageStore: UsageStore {
     }
 
     public func save(quota: QuotaSnapshot) throws {
+        try saveQuota(quota, isFromSession: false)
+    }
+
+    private func saveQuota(_ quota: QuotaSnapshot, isFromSession: Bool) throws {
         let connection = try requireConnection()
         guard isValidQuota(quota) else {
             throw validationFailure(operation: "validate quota")
@@ -351,14 +382,27 @@ public actor SQLiteUsageStore: UsageStore {
             """
             INSERT INTO quota_snapshots (
               fetched_at, limit_id, used_percent, window_duration_minutes,
-              starts_at, resets_at
-            ) VALUES (?, ?, ?, ?, ?, ?)
+              starts_at, resets_at, is_from_session
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(fetched_at) DO UPDATE SET
               limit_id = excluded.limit_id,
               used_percent = excluded.used_percent,
               window_duration_minutes = excluded.window_duration_minutes,
               starts_at = excluded.starts_at,
-              resets_at = excluded.resets_at;
+              resets_at = excluded.resets_at,
+              is_from_session = excluded.is_from_session
+            WHERE excluded.is_from_session = 0 OR (quota_snapshots.is_from_session = 1 AND (
+              (excluded.limit_id = quota_snapshots.limit_id
+                AND excluded.window_duration_minutes = quota_snapshots.window_duration_minutes
+                AND ABS(excluded.starts_at - quota_snapshots.starts_at) <= 60
+                AND NOT (quota_snapshots.used_percent = 0 AND excluded.starts_at < quota_snapshots.starts_at)
+                AND excluded.used_percent >= quota_snapshots.used_percent)
+              OR (excluded.limit_id = quota_snapshots.limit_id
+                AND excluded.window_duration_minutes = quota_snapshots.window_duration_minutes
+                AND excluded.starts_at > quota_snapshots.starts_at
+                AND (excluded.starts_at - quota_snapshots.starts_at > 60 OR excluded.used_percent = 0))
+              OR (excluded.limit_id = 'codex' AND quota_snapshots.limit_id != 'codex')
+            ));
             """,
             operation: "save quota"
         )
@@ -368,6 +412,7 @@ public actor SQLiteUsageStore: UsageStore {
         try statement.bind(Int64(quota.windowDurationMinutes), at: 4)
         try statement.bind(quota.startsAt.timeIntervalSince1970, at: 5)
         try statement.bind(quota.resetsAt.timeIntervalSince1970, at: 6)
+        try statement.bind(isFromSession ? Int64(1) : Int64(0), at: 7)
         guard try statement.step() == .done else {
             throw corruption(operation: "save quota")
         }
@@ -379,7 +424,7 @@ public actor SQLiteUsageStore: UsageStore {
             """
             SELECT limit_id, used_percent, window_duration_minutes,
                    starts_at, resets_at, fetched_at
-            FROM quota_snapshots ORDER BY fetched_at DESC LIMIT 1;
+            FROM quota_snapshots WHERE is_from_session = 0 ORDER BY fetched_at DESC LIMIT 1;
             """,
             operation: "read quota"
         )
@@ -391,31 +436,26 @@ public actor SQLiteUsageStore: UsageStore {
         to: Date,
         limitID: String
     ) throws -> [QuotaSnapshot] {
-        // 连同区间前最后一条读取，才能识别跨零点但额度未变化的空档。
+        // 先用保留的完整历史过滤旧日志，再截取边界；先截取会把旧值误当成有效前驱。
         let statement = try requireConnection().prepare(
             """
             SELECT limit_id, used_percent, window_duration_minutes,
-                   starts_at, resets_at, fetched_at
+                   starts_at, resets_at, fetched_at, is_from_session
             FROM quota_snapshots
             WHERE limit_id = ? AND fetched_at <= ?
-              AND (fetched_at >= ? OR fetched_at = (
-                SELECT MAX(fetched_at) FROM quota_snapshots
-                WHERE limit_id = ? AND fetched_at < ?
-              ))
             ORDER BY fetched_at ASC;
             """,
             operation: "read quota history"
         )
         try statement.bind(limitID, at: 1)
         try statement.bind(to.timeIntervalSince1970, at: 2)
-        try statement.bind(from.timeIntervalSince1970, at: 3)
-        try statement.bind(limitID, at: 4)
-        try statement.bind(from.timeIntervalSince1970, at: 5)
-        var result: [QuotaSnapshot] = []
+        var result: [QuotaHistoryReading] = []
         while let quota = try readQuota(from: statement) {
-            result.append(quota)
+            result.append(QuotaHistoryReading(quota: quota, isFromSession: try statement.int64(at: 6) != 0))
         }
-        return result
+        let merged = mergingSessionQuotaHistory(result)
+        let predecessor = merged.last { $0.fetchedAt < from }
+        return merged.filter { $0.fetchedAt >= from || $0.fetchedAt == predecessor?.fetchedAt }
     }
 
     private func readQuota(from statement: SQLiteStatement) throws -> QuotaSnapshot? {
@@ -653,21 +693,30 @@ public actor SQLiteUsageStore: UsageStore {
                 throw corruption(operation: "prune official days")
             }
 
-            // 区间前的末条读数仍用于跨日边界和周期识别，每个额度分别保留。
-            let quotas = try connection.prepare(
-                """
-                DELETE FROM quota_snapshots
-                WHERE fetched_at < ? AND fetched_at NOT IN (
-                  SELECT MAX(fetched_at) FROM quota_snapshots
-                  WHERE fetched_at < ? GROUP BY limit_id
-                );
-                """,
-                operation: "prune quota history"
-            )
-            try quotas.bind(eventsBefore.timeIntervalSince1970, at: 1)
-            try quotas.bind(eventsBefore.timeIntervalSince1970, at: 2)
-            guard try quotas.step() == .done else {
-                throw corruption(operation: "prune quota history")
+            let limits = try connection.prepare("SELECT DISTINCT limit_id FROM quota_snapshots;", operation: "read quota limits")
+            var limitIDs: [String] = []
+            while try limits.step() == .row { limitIDs.append(try limits.string(at: 0)) }
+            for limitID in limitIDs {
+                let history = try quotaHistory(from: eventsBefore, to: .distantFuture, limitID: limitID)
+                let predecessor = history.last { $0.fetchedAt < eventsBefore }
+                // 保留有效前驱和主动读取锚点，避免下一次查询把缓存旧值重新接纳。
+                let quotas = try connection.prepare(
+                    """
+                    DELETE FROM quota_snapshots
+                    WHERE limit_id = ? AND fetched_at < ? AND fetched_at != ? AND fetched_at NOT IN (
+                      SELECT MAX(fetched_at) FROM quota_snapshots
+                      WHERE limit_id = ? AND fetched_at < ? AND is_from_session = 0
+                      HAVING COUNT(*) > 0
+                    );
+                    """,
+                    operation: "prune quota history"
+                )
+                try quotas.bind(limitID, at: 1)
+                try quotas.bind(eventsBefore.timeIntervalSince1970, at: 2)
+                try quotas.bind((predecessor?.fetchedAt ?? eventsBefore).timeIntervalSince1970, at: 3)
+                try quotas.bind(limitID, at: 4)
+                try quotas.bind(eventsBefore.timeIntervalSince1970, at: 5)
+                guard try quotas.step() == .done else { throw corruption(operation: "prune quota history") }
             }
         }
     }

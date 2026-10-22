@@ -111,6 +111,90 @@ actor CountingSessionIndexer: SessionUsageIndexing {
     func calls() -> Int { callCount }
 }
 
+private actor RefreshReadGate<Value: Sendable> {
+    private let started: XCTestExpectation
+    private let cancelled: XCTestExpectation?
+    private let result: Result<Value, RPCErrorPayload>
+    private var isOpen = false
+    private var waiter: CheckedContinuation<Void, any Error>?
+
+    init(
+        started: XCTestExpectation,
+        result: Result<Value, RPCErrorPayload>,
+        cancelled: XCTestExpectation? = nil
+    ) {
+        self.started = started
+        self.result = result
+        self.cancelled = cancelled
+    }
+
+    func read() async throws -> Value {
+        started.fulfill()
+        try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            if !isOpen {
+                try await withCheckedThrowingContinuation { waiter = $0 }
+            }
+            try Task.checkCancellation()
+        } onCancel: {
+            Task { await self.cancel() }
+        }
+        return try result.get()
+    }
+
+    func open() {
+        isOpen = true
+        waiter?.resume()
+        waiter = nil
+    }
+
+    private func cancel() {
+        cancelled?.fulfill()
+        waiter?.resume(throwing: CancellationError())
+        waiter = nil
+    }
+}
+
+private actor GatedRefreshAccountClient: AccountUsageReading {
+    let codexHome: URL
+    let limits: RefreshReadGate<RateLimitsResponse>
+    let usage: RefreshReadGate<AccountUsageResponse>
+
+    init(
+        codexHome: URL,
+        limits: RefreshReadGate<RateLimitsResponse>,
+        usage: RefreshReadGate<AccountUsageResponse>
+    ) {
+        self.codexHome = codexHome
+        self.limits = limits
+        self.usage = usage
+    }
+
+    func initialize() async throws -> InitializeResult {
+        InitializeResult(
+            codexHome: codexHome.path, platformFamily: "unix",
+            platformOs: "macos", userAgent: "test"
+        )
+    }
+
+    func readRateLimits() async throws -> RateLimitsResponse {
+        try await limits.read()
+    }
+
+    func readAccountUsage() async throws -> AccountUsageResponse {
+        try await usage.read()
+    }
+
+    func nextNotification() async -> AppServerNotification? { nil }
+}
+
+private actor RefreshSnapshotRecorder {
+    private var snapshots: [UsageSnapshot] = []
+
+    func append(_ snapshot: UsageSnapshot) { snapshots.append(snapshot) }
+    func values() -> [UsageSnapshot] { snapshots }
+}
+
 private enum TestIndexerFailure: Error {
     case unavailable
 }
@@ -182,6 +266,11 @@ actor ReadOnlyUsageStoreSpy: UsageStore {
         events: [StoredUsageEvent],
         cursor: FileCursor
     ) throws -> Int {
+        writeCount += 1
+        return events.count
+    }
+
+    func ingest(events: [StoredUsageEvent], quotas: [QuotaSnapshot], cursor: FileCursor) throws -> Int {
         writeCount += 1
         return events.count
     }
@@ -524,6 +613,328 @@ struct ServiceFixture {
 
 final class UsageServiceTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_788_148_800)
+
+    func testRefreshStartsBothRemoteReadsBeforeEitherCompletes() async throws {
+        let limitsStarted = expectation(description: "quota read started")
+        let usageStarted = expectation(description: "usage read started")
+        let limits = RefreshReadGate(
+            started: limitsStarted, result: .success(ServiceFixture.fullLimits)
+        )
+        let usage = RefreshReadGate(
+            started: usageStarted, result: .success(ServiceFixture.fullUsage)
+        )
+        let fixture = try await makeGatedRefreshFixture(limits: limits, usage: usage)
+        let refresh = Task { [now] in
+            try await fixture.service.refresh(reason: .manual, now: now)
+        }
+
+        await fulfillment(of: [limitsStarted, usageStarted], timeout: 1)
+        await limits.open()
+        await usage.open()
+        let snapshot = try await refresh.value
+
+        XCTAssertEqual(snapshot.quota?.remainingPercent, 75)
+        XCTAssertEqual(snapshot.today.displayedTokens, 120)
+        XCTAssertEqual(snapshot.recentDays.first { $0.day.day == 30 }?.displayedTokens, 400)
+    }
+
+    func testRefreshPublishesIndexedLocalSnapshotBeforeRemoteReadsComplete() async throws {
+        let limitsStarted = expectation(description: "quota read started")
+        let usageStarted = expectation(description: "usage read started")
+        let localPublished = expectation(description: "indexed local snapshot published")
+        let limits = RefreshReadGate(
+            started: limitsStarted, result: .success(ServiceFixture.fullLimits)
+        )
+        let usage = RefreshReadGate(
+            started: usageStarted, result: .success(ServiceFixture.fullUsage)
+        )
+        let fixture = try await makeGatedRefreshFixture(limits: limits, usage: usage)
+        let recorder = RefreshSnapshotRecorder()
+        let refresh = Task { [now] in
+            try await fixture.service.refresh(reason: .manual, now: now) { snapshot in
+                await recorder.append(snapshot)
+                // 用量接口先返回时也可能没有额度；这里只等待首个本地快照。
+                if await recorder.values().count == 1,
+                   snapshot.quota == nil, snapshot.today.displayedTokens == 120 {
+                    localPublished.fulfill()
+                }
+            }
+        }
+
+        await fulfillment(of: [localPublished, limitsStarted, usageStarted], timeout: 1)
+        let publishedWhileBlocked = await recorder.values()
+        XCTAssertEqual(publishedWhileBlocked.first?.today.displayedTokens, 120)
+        XCTAssertNil(publishedWhileBlocked.first?.quota)
+
+        await limits.open()
+        await usage.open()
+        _ = try await refresh.value
+    }
+
+    func testRefreshPublishesQuotaWhileOfficialUsageIsStillBlocked() async throws {
+        let limitsStarted = expectation(description: "quota read started")
+        let usageStarted = expectation(description: "usage read started")
+        let quotaPublished = expectation(description: "quota published before usage completes")
+        let limits = RefreshReadGate(
+            started: limitsStarted, result: .success(ServiceFixture.fullLimits)
+        )
+        let usage = RefreshReadGate(
+            started: usageStarted, result: .success(ServiceFixture.fullUsage)
+        )
+        let fixture = try await makeGatedRefreshFixture(limits: limits, usage: usage)
+        let recorder = RefreshSnapshotRecorder()
+        let refresh = Task { [now] in
+            try await fixture.service.refresh(reason: .manual, now: now) { snapshot in
+                await recorder.append(snapshot)
+                if snapshot.quota?.remainingPercent == 75,
+                   snapshot.recentDays.first(where: { $0.day.day == 30 })?.officialTokens == nil {
+                    quotaPublished.fulfill()
+                }
+            }
+        }
+
+        await fulfillment(of: [limitsStarted, usageStarted], timeout: 1)
+        await limits.open()
+        await fulfillment(of: [quotaPublished], timeout: 1)
+        let quotaState = try await fixture.store.refreshState()
+        XCTAssertEqual(quotaState.lastSuccessfulQuotaRefreshAt, now)
+        XCTAssertNil(quotaState.lastSuccessfulOfficialUsageRefreshAt)
+
+        await usage.open()
+        let finalSnapshot = try await refresh.value
+        let snapshots = await recorder.values()
+        XCTAssertEqual(snapshots.last, finalSnapshot)
+        XCTAssertEqual(finalSnapshot.recentDays.first { $0.day.day == 30 }?.displayedTokens, 400)
+    }
+
+    func testRefreshPublishesFirstAndResetCyclesWhileOfficialUsageIsBlocked() async throws {
+        for hasPreviousCycle in [false, true] {
+            let limitsStarted = expectation(description: "quota read started")
+            let usageStarted = expectation(description: "usage read started")
+            let quotaPublished = expectation(description: "new quota published")
+            let limits = RefreshReadGate(
+                started: limitsStarted, result: .success(ServiceFixture.fullLimits)
+            )
+            let usage = RefreshReadGate(
+                started: usageStarted, result: .success(ServiceFixture.fullUsage)
+            )
+            let fixture = try await makeGatedRefreshFixture(limits: limits, usage: usage)
+            let week: TimeInterval = 7 * 24 * 60 * 60
+            if hasPreviousCycle {
+                try await fixture.store.migrate()
+                try await fixture.store.save(quota: QuotaSnapshot(
+                    limitID: "codex", usedPercent: 90, windowDurationMinutes: 10_080,
+                    startsAt: now.addingTimeInterval(-week), resetsAt: now,
+                    fetchedAt: now.addingTimeInterval(-1)
+                ))
+                try await fixture.store.replace(cycles: [QuotaCycle(
+                    startsAt: now.addingTimeInterval(-week), endsAt: now,
+                    usage: .zero, displayedTokens: 0, status: .localLive,
+                    boundaryIsEstimated: false
+                )])
+            }
+            let recorder = RefreshSnapshotRecorder()
+            let refresh = Task { [now] in
+                try await fixture.service.refresh(reason: .manual, now: now) { snapshot in
+                    await recorder.append(snapshot)
+                    if snapshot.quota?.fetchedAt == now,
+                       snapshot.recentDays.first(where: { $0.day.day == 30 })?.officialTokens == nil {
+                        quotaPublished.fulfill()
+                    }
+                }
+            }
+            await fulfillment(of: [limitsStarted, usageStarted], timeout: 1)
+            await limits.open()
+            await fulfillment(of: [quotaPublished], timeout: 1)
+            let snapshot = await recorder.values().last
+
+            XCTAssertEqual(snapshot?.currentCycle?.startsAt, now)
+            XCTAssertEqual(snapshot?.currentCycle?.endsAt, now.addingTimeInterval(week))
+            XCTAssertEqual(snapshot?.currentCycle?.quotaUsedPercent, 25)
+            XCTAssertEqual(snapshot?.cycleHistory.first?.usage.inputTokens, 100)
+            XCTAssertEqual(snapshot?.cycleHistory.first?.usage.outputTokens, 20)
+
+            await usage.open()
+            _ = try await refresh.value
+        }
+    }
+
+    func testLocalSnapshotReconcilesNewEventsWithExistingOfficialCycleDays() async throws {
+        let limitsStarted = expectation(description: "quota read started")
+        let usageStarted = expectation(description: "usage read started")
+        let limits = RefreshReadGate(
+            started: limitsStarted, result: .success(ServiceFixture.fullLimits)
+        )
+        let usage = RefreshReadGate(
+            started: usageStarted, result: .success(ServiceFixture.fullUsage)
+        )
+        let fixture = try await makeGatedRefreshFixture(limits: limits, usage: usage)
+        let cycleStart = now.addingTimeInterval(-76 * 60 * 60)
+        let cycleEnd = cycleStart.addingTimeInterval(7 * 24 * 60 * 60)
+        try await fixture.store.migrate()
+        try await fixture.store.save(quota: QuotaSnapshot(
+            limitID: "codex", usedPercent: 20, windowDurationMinutes: 10_080,
+            startsAt: cycleStart, resetsAt: cycleEnd, fetchedAt: now.addingTimeInterval(-60)
+        ))
+        try await fixture.store.replace(cycles: [QuotaCycle(
+            startsAt: cycleStart, endsAt: cycleEnd, usage: .zero,
+            displayedTokens: 0, status: .localLive, boundaryIsEstimated: false
+        )])
+        try await fixture.store.upsert(officialDays: [OfficialUsageDay(
+            day: LocalDay(year: 2026, month: 8, day: 30), tokens: 400,
+            fetchedAt: now.addingTimeInterval(-60)
+        )])
+        let recorder = RefreshSnapshotRecorder()
+        let refresh = Task { [now] in
+            try await fixture.service.refresh(reason: .manual, now: now) { snapshot in
+                await recorder.append(snapshot)
+            }
+        }
+        await fulfillment(of: [limitsStarted, usageStarted], timeout: 1)
+        let localSnapshot = await recorder.values().first
+        let storedCycles = try await fixture.store.cycles()
+
+        XCTAssertEqual(localSnapshot?.today.displayedTokens, 120)
+        XCTAssertEqual(localSnapshot?.currentCycle?.usage.inputTokens, 100)
+        XCTAssertEqual(localSnapshot?.currentCycle?.usage.outputTokens, 20)
+        XCTAssertEqual(localSnapshot?.currentCycle?.displayedTokens, 520)
+        XCTAssertEqual(storedCycles.count, 1)
+        XCTAssertEqual(storedCycles.first?.usage, .zero)
+
+        await limits.open()
+        await usage.open()
+        _ = try await refresh.value
+    }
+
+    func testRefreshPublishesQuotaFailureWithoutCancellingOfficialUsage() async throws {
+        let limitsStarted = expectation(description: "quota read started")
+        let usageStarted = expectation(description: "usage read started")
+        let failurePublished = expectation(description: "quota failure published")
+        let limits = RefreshReadGate<RateLimitsResponse>(
+            started: limitsStarted, result: .failure(rpcFailure())
+        )
+        let usage = RefreshReadGate(
+            started: usageStarted, result: .success(ServiceFixture.fullUsage)
+        )
+        let fixture = try await makeGatedRefreshFixture(limits: limits, usage: usage)
+        let refresh = Task { [now] in
+            try await fixture.service.refresh(reason: .manual, now: now) { snapshot in
+                if snapshot.status == .stale,
+                   snapshot.recentDays.first(where: { $0.day.day == 30 })?.officialTokens == nil {
+                    failurePublished.fulfill()
+                }
+            }
+        }
+
+        await fulfillment(of: [limitsStarted, usageStarted], timeout: 1)
+        await limits.open()
+        await fulfillment(of: [failurePublished], timeout: 1)
+        await usage.open()
+        let snapshot = try await refresh.value
+        let state = try await fixture.store.refreshState()
+
+        XCTAssertEqual(snapshot.status, .stale)
+        XCTAssertEqual(snapshot.recentDays.first { $0.day.day == 30 }?.displayedTokens, 400)
+        XCTAssertEqual(state.failedSources, [.rateLimits])
+        XCTAssertEqual(state.consecutiveFailureCount, 1)
+        XCTAssertEqual(state.lastSuccessfulOfficialUsageRefreshAt, now)
+    }
+
+    func testCancellingRefreshCancelsBothReadsAndReleasesOperationLock() async throws {
+        let limitsStarted = expectation(description: "quota read started")
+        let usageStarted = expectation(description: "usage read started")
+        let limitsCancelled = expectation(description: "quota read cancelled")
+        let usageCancelled = expectation(description: "usage read cancelled")
+        let queuedSnapshotCompleted = expectation(description: "queued snapshot completed")
+        let limits = RefreshReadGate(
+            started: limitsStarted, result: .success(ServiceFixture.fullLimits),
+            cancelled: limitsCancelled
+        )
+        let usage = RefreshReadGate(
+            started: usageStarted, result: .success(ServiceFixture.fullUsage),
+            cancelled: usageCancelled
+        )
+        let fixture = try await makeGatedRefreshFixture(limits: limits, usage: usage)
+        let refresh = Task { [now] in
+            try await fixture.service.refresh(reason: .manual, now: now)
+        }
+        await fulfillment(of: [limitsStarted, usageStarted], timeout: 1)
+        let queuedSnapshot = Task { [now] in
+            let snapshot = try await fixture.service.currentSnapshot(now: now)
+            queuedSnapshotCompleted.fulfill()
+            return snapshot
+        }
+        await waitUntilOperationQueueDepth(1, service: fixture.service)
+
+        refresh.cancel()
+        await fulfillment(
+            of: [limitsCancelled, usageCancelled, queuedSnapshotCompleted], timeout: 1
+        )
+        await limits.open()
+        await usage.open()
+        await XCTAssertThrowsErrorAsync(try await refresh.value) { error in
+            XCTAssertTrue(error is CancellationError)
+        }
+        _ = try await queuedSnapshot.value
+    }
+
+    func testProgressiveRefreshIndexesExpandedHistoryBeforePublishingQuota() async throws {
+        let limitsStarted = expectation(description: "quota read started")
+        let usageStarted = expectation(description: "usage read started")
+        let quotaPublished = expectation(description: "quota published")
+        let week: TimeInterval = 7 * 24 * 60 * 60
+        let currentStart = now.addingTimeInterval(-3 * 24 * 60 * 60)
+        let oldestStart = currentStart.addingTimeInterval(-8 * week)
+        let limits = RefreshReadGate(
+            started: limitsStarted,
+            result: .success(RateLimitsResponse(
+                rateLimits: RateLimitBucket(
+                    limitId: "codex", limitName: nil,
+                    primary: RateLimitWindow(
+                        usedPercent: 25, windowDurationMins: 10_080,
+                        resetsAt: Int64(currentStart.addingTimeInterval(week).timeIntervalSince1970)
+                    ),
+                    secondary: nil
+                ),
+                rateLimitsByLimitId: nil
+            ))
+        )
+        let usage = RefreshReadGate(
+            started: usageStarted, result: .success(ServiceFixture.fullUsage)
+        )
+        let fixture = try await makeGatedRefreshFixture(limits: limits, usage: usage)
+        let oldEventAt = oldestStart.addingTimeInterval(60)
+        let session = fixture.codexHome.appendingPathComponent("sessions/older.jsonl")
+        try Data((tokenLine(
+            timestamp: ISO8601DateFormatter().string(from: oldEventAt),
+            input: 30, cached: 0, output: 3
+        ) + "\n").utf8).write(to: session)
+        try FileManager.default.setAttributes(
+            [.modificationDate: oldEventAt], ofItemAtPath: session.path
+        )
+        let refresh = Task { [now] in
+            try await fixture.service.refresh(reason: .manual, now: now) { snapshot in
+                if snapshot.quota != nil,
+                   snapshot.recentDays.first(where: { $0.day.day == 30 })?.officialTokens == nil {
+                    quotaPublished.fulfill()
+                }
+            }
+        }
+        await fulfillment(of: [limitsStarted, usageStarted], timeout: 1)
+        let initialEvents = try await fixture.store.events(from: oldestStart, to: now)
+        XCTAssertFalse(initialEvents.contains { $0.occurredAt == oldEventAt })
+
+        await limits.open()
+        await fulfillment(of: [quotaPublished], timeout: 1)
+        let expandedEvents = try await fixture.store.events(from: oldestStart, to: now)
+        XCTAssertTrue(expandedEvents.contains { $0.occurredAt == oldEventAt })
+
+        await usage.open()
+        let snapshot = try await refresh.value
+        XCTAssertEqual(snapshot.cycleHistory.last?.startsAt, oldestStart)
+        XCTAssertEqual(snapshot.cycleHistory.last?.usage.inputTokens, 30)
+        XCTAssertEqual(snapshot.cycleHistory.last?.usage.outputTokens, 3)
+    }
 
     func testResolvedCodexHomeIsNilBeforeInitializationWhenNoCandidateExists() async throws {
         let initializedHome = try temporaryCodexHome()
@@ -2084,6 +2495,24 @@ final class UsageServiceTests: XCTestCase {
 
         XCTAssertFalse(acceptedCallback)
         XCTAssertFalse(acceptedFinish)
+    }
+
+    private func makeGatedRefreshFixture(
+        limits: RefreshReadGate<RateLimitsResponse>,
+        usage: RefreshReadGate<AccountUsageResponse>
+    ) async throws -> (service: UsageService, store: SQLiteUsageStore, codexHome: URL) {
+        let fixture = try await ServiceFixture.make()
+        let client = GatedRefreshAccountClient(
+            codexHome: fixture.codexHome, limits: limits, usage: usage
+        )
+        return (
+            makeService(
+                accountClient: client, indexer: SessionUsageIndexer(store: fixture.store),
+                store: fixture.store, codexHome: fixture.codexHome
+            ),
+            fixture.store,
+            fixture.codexHome
+        )
     }
 
     private func makeParkedNotificationFixture() throws -> (
