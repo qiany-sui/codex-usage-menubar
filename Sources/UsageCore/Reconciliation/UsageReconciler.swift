@@ -183,19 +183,21 @@ public struct UsageReconciler: Sendable {
         to end: Date,
         startsWithReset: Bool,
         endsWithReset: Bool,
-        observations: [QuotaSnapshot]
+        observations: [QuotaSnapshot],
+        cycleStartsAt: Date? = nil
     ) -> Double? {
         let first: QuotaSnapshot?
-        if startsWithReset, let reading = observations.first(where: { $0.startsAt == start }) {
+        if startsWithReset, let reading = observations.first(where: { $0.startsAt == (cycleStartsAt ?? start) }) {
             first = QuotaSnapshot(
                 limitID: reading.limitID, usedPercent: 0,
                 windowDurationMinutes: reading.windowDurationMinutes,
-                startsAt: start, resetsAt: reading.resetsAt, fetchedAt: start
+                startsAt: reading.startsAt, resetsAt: reading.resetsAt, fetchedAt: start
             )
         } else {
             first = quotaAtBoundary(start, observations: observations)
         }
         guard let first, isUsableQuota(first) else { return nil }
+        if let cycleStartsAt, first.startsAt != cycleStartsAt { return nil }
 
         let last: QuotaSnapshot?
         if endsWithReset {
@@ -222,23 +224,26 @@ public struct UsageReconciler: Sendable {
 
     private func recordedConsumedPercent(
         from start: Date, to end: Date, startsWithReset: Bool,
-        observations: [QuotaSnapshot]
+        observations: [QuotaSnapshot], cycleStartsAt: Date? = nil
     ) -> Double? {
         // 只保留这一段内可确认的增量，不把跨日空档或另一周期的读数算进来。
         let inRange = observations.filter {
-            start <= $0.fetchedAt && $0.fetchedAt <= end && $0.startsAt <= start
+            start <= $0.fetchedAt && $0.fetchedAt <= end
+                && ($0.startsAt <= start || (startsWithReset && $0.startsAt == cycleStartsAt))
+                && (cycleStartsAt == nil || $0.startsAt == cycleStartsAt)
         }
         let first: QuotaSnapshot?
-        if startsWithReset, let reading = observations.first(where: { $0.startsAt == start }) {
+        if startsWithReset, let reading = observations.first(where: { $0.startsAt == (cycleStartsAt ?? start) }) {
             first = QuotaSnapshot(
                 limitID: reading.limitID, usedPercent: 0,
                 windowDurationMinutes: reading.windowDurationMinutes,
-                startsAt: start, resetsAt: reading.resetsAt, fetchedAt: start
+                startsAt: reading.startsAt, resetsAt: reading.resetsAt, fetchedAt: start
             )
         } else {
             first = quotaAtBoundary(start, observations: observations) ?? inRange.first
         }
         guard let first, isUsableQuota(first) else { return nil }
+        if let cycleStartsAt, first.startsAt != cycleStartsAt { return nil }
         let readings = [first] + inRange
         guard let last = readings.last,
               last.fetchedAt > max(start, first.fetchedAt) else { return nil }
@@ -297,20 +302,9 @@ public struct UsageReconciler: Sendable {
     private func cycleQuotaUsage(
         _ cycle: QuotaCycle, now: Date, observations: [QuotaSnapshot], knownCycleStarts: Set<Date>
     ) -> (percent: Double?, lastRecorded: QuotaSnapshot?) {
-        guard !cycle.boundaryIsEstimated, cycle.startsAt <= now else { return (nil, nil) }
-        let starts = Set(observations.map(\.startsAt))
-        let matchingStart: Date
-        if starts.contains(cycle.startsAt) {
-            matchingStart = cycle.startsAt
-        } else {
-            // 兼容已保留的秒级边界；存在多个候选时不猜测归属。
-            let candidates = starts.filter {
-                abs($0.timeIntervalSince(cycle.startsAt)) <= 60 && $0 < cycle.endsAt
-                    && !knownCycleStarts.contains($0)
-            }
-            guard candidates.count == 1, let candidate = candidates.first else { return (nil, nil) }
-            matchingStart = candidate
-        }
+        guard let matchingStart = matchingQuotaStart(
+            cycle, now: now, observations: observations, knownCycleStarts: knownCycleStarts
+        ) else { return (nil, nil) }
         let readings = observations.filter {
             $0.startsAt == matchingStart && $0.fetchedAt < cycle.endsAt
         }
@@ -329,6 +323,23 @@ public struct UsageReconciler: Sendable {
             }
         }
         return (last.usedPercent, nil)
+    }
+
+    private func matchingQuotaStart(
+        _ cycle: QuotaCycle, now: Date, observations: [QuotaSnapshot], knownCycleStarts: Set<Date>
+    ) -> Date? {
+        guard !cycle.boundaryIsEstimated, cycle.startsAt <= now else { return nil }
+        let starts = Set(observations.map(\.startsAt))
+        if starts.contains(cycle.startsAt) {
+            return cycle.startsAt
+        } else {
+            // 兼容已保留的秒级边界；存在多个候选时不猜测归属。
+            let candidates = starts.filter {
+                abs($0.timeIntervalSince(cycle.startsAt)) <= 60 && $0 < cycle.endsAt
+                    && !knownCycleStarts.contains($0)
+            }
+            return candidates.count == 1 ? candidates.first : nil
+        }
     }
 
     private func aggregateEventsByStoredDay(
@@ -407,7 +418,7 @@ public struct UsageReconciler: Sendable {
                 endsAt: cycle.endsAt,
                 usage: cycle.usage,
                 displayedTokens: totalTokensClamped(cycle.usage),
-                status: .partiallyCalibrated,
+                status: .localLive,
                 boundaryIsEstimated: cycle.boundaryIsEstimated,
                 quotaUsedPercent: quotaUsage.percent,
                 lastRecordedQuota: quotaUsage.lastRecorded
@@ -441,15 +452,57 @@ public struct UsageReconciler: Sendable {
             }
         }
 
-        let hasPartialBoundary = cycle.startsAt != calendar.startOfDay(
-            for: cycle.startsAt
-        ) || cycle.endsAt != calendar.startOfDay(for: cycle.endsAt)
+        let matchingStart = matchingQuotaStart(
+            cycle, now: now, observations: observations, knownCycleStarts: knownCycleStarts
+        )
+        var dailyUsage: [CycleUsageDay] = []
+        var dayStart = calendar.startOfDay(for: cycle.startsAt)
+        let usageEnd = min(cycle.endsAt, now)
+        while dayStart < usageEnd {
+            guard let nextDayStart = calendar.date(byAdding: .day, value: 1, to: dayStart),
+                  nextDayStart > dayStart else { break }
+            let day = localDay(for: dayStart, calendar: calendar)
+            let start = max(dayStart, cycle.startsAt)
+            let end = min(nextDayStart, usageEnd)
+            guard start < end else { break }
+            let official = completeDaySet.contains(day) ? officialByDay[day] : nil
+            var quotaPercent: Double?
+            var recordedPercent: Double?
+            if let matchingStart {
+                // 保留其他周期读数参与边界检查，但消耗只能来自本周期。
+                quotaPercent = consumedPercent(
+                    from: start, to: end,
+                    startsWithReset: start == cycle.startsAt,
+                    endsWithReset: end == cycle.endsAt,
+                    observations: observations, cycleStartsAt: matchingStart
+                )
+                if quotaPercent == nil {
+                    recordedPercent = recordedConsumedPercent(
+                        from: start, to: end, startsWithReset: start == cycle.startsAt,
+                        observations: observations, cycleStartsAt: matchingStart
+                    )
+                }
+            }
+            dailyUsage.append(CycleUsageDay(
+                day: day, startsAt: start, endsAt: end,
+                displayedTokens: official?.tokens ?? totalTokensClamped(localByDay[day] ?? .zero),
+                status: official == nil ? .localLive : .calibrated,
+                quotaConsumedPercent: quotaPercent,
+                recordedQuotaConsumedPercent: recordedPercent
+            ))
+            dayStart = nextDayStart
+        }
+        // 采集时保存的日期可能来自旧时区；无法忠实拆分时保留总量，不挪日凑数。
+        let storedDaysMatchCalendar = cycleEvents.allSatisfy {
+            $0.localDay == localDay(for: $0.occurredAt, calendar: calendar)
+        }
+        let hasCompleteDailyUsage = storedDaysMatchCalendar && dailyUsage.reduce(Int64(0)) {
+            addingClamped($0, $1.displayedTokens)
+        } == displayedTokens
         let status: UsageCalibrationStatus
-        if hasPartialBoundary {
-            status = .partiallyCalibrated
-        } else if replacedDayCount == 0 {
+        if replacedDayCount == 0 {
             status = .localLive
-        } else if replacedDayCount < completeDays.count {
+        } else if !hasCompleteDailyUsage || dailyUsage.contains(where: { $0.status != .calibrated }) {
             status = .partiallyCalibrated
         } else {
             status = .calibrated
@@ -463,7 +516,8 @@ public struct UsageReconciler: Sendable {
             status: status,
             boundaryIsEstimated: cycle.boundaryIsEstimated,
             quotaUsedPercent: quotaUsage.percent,
-            lastRecordedQuota: quotaUsage.lastRecorded
+            lastRecordedQuota: quotaUsage.lastRecorded,
+            dailyUsage: hasCompleteDailyUsage ? dailyUsage : nil
         )
     }
 

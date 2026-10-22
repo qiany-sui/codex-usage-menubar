@@ -6,6 +6,11 @@ protocol UsageServicing: Actor {
         reason: RefreshReason,
         now: Date
     ) async throws -> UsageSnapshot
+    func refresh(
+        reason: RefreshReason,
+        now: Date,
+        onUpdate: (@Sendable (UsageSnapshot) async -> Void)?
+    ) async throws -> UsageSnapshot
     func processNextAccountNotification(
         now: @Sendable () -> Date
     ) async throws -> UsageSnapshot?

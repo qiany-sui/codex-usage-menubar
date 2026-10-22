@@ -273,11 +273,26 @@ struct TrendPresentation: Equatable {
     }
 }
 
+struct CycleDayPresentation: Equatable, Identifiable {
+    let id: Date
+    let dateLabel: String
+    let timeRange: String
+    let tokens: Int64
+    let sourceLabel: String
+    let quotaLabel: String
+    let quotaIsPartial: Bool
+}
+
 struct CycleEntryPresentation: Equatable, Identifiable {
     let id: Date
     let range: String
+    let startTime: String
+    let endTime: String
+    let tokens: Int64
     let formattedTokens: String
     let statusLabel: String
+    let calibrationHelp: String
+    let dailyUsage: [CycleDayPresentation]?
     let isCurrent: Bool
     let boundaryIsEstimated: Bool
     let quotaUsage: String
@@ -310,10 +325,56 @@ struct CycleHistoryPresentation: Equatable {
             cycles.append((cycle, false))
         }
 
+        let detailDateFormatter = DateFormatter()
+        detailDateFormatter.calendar = Calendar(identifier: .gregorian)
+        detailDateFormatter.locale = Locale(identifier: "zh_CN")
+        detailDateFormatter.timeZone = timeZone
+        detailDateFormatter.dateFormat = "yyyy/M/d HH:mm"
+        let timeFormatter = DateFormatter()
+        timeFormatter.calendar = detailDateFormatter.calendar
+        timeFormatter.locale = detailDateFormatter.locale
+        timeFormatter.timeZone = timeZone
+        timeFormatter.dateFormat = "HH:mm"
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone
+
         entries = cycles.map { item in
             let recorded = item.cycle.quotaUsedPercent == nil && !item.isCurrent
                 ? item.cycle.lastRecordedQuota : nil
             let percent = UsageFormatters.quotaConsumedPercent(item.cycle.quotaUsedPercent ?? recorded?.usedPercent)
+            let dailyUsage = item.cycle.dailyUsage?.sorted { $0.startsAt > $1.startsAt }.map { day in
+                let quotaIsPartial = day.quotaConsumedPercent == nil && day.recordedQuotaConsumedPercent != nil
+                let value = day.quotaConsumedPercent ?? day.recordedQuotaConsumedPercent
+                let end = day.endsAt == calendar.startOfDay(for: day.endsAt)
+                    ? "24:00" : timeFormatter.string(from: day.endsAt)
+                return CycleDayPresentation(
+                    id: day.startsAt,
+                    dateLabel: UsageFormatters.day(day.day),
+                    timeRange: timeFormatter.string(from: day.startsAt) + "–" + end,
+                    tokens: day.displayedTokens,
+                    sourceLabel: day.status == .calibrated ? "官方校准" : "本地统计",
+                    quotaLabel: value.map {
+                        (quotaIsPartial ? "已记录 " : "") + UsageFormatters.quotaConsumedPercent($0)
+                    } ?? "—",
+                    quotaIsPartial: quotaIsPartial
+                )
+            }
+            let calibrationHelp: String
+            if let days = item.cycle.dailyUsage {
+                let officialCount = days.filter { $0.status == .calibrated }.count
+                let localCount = days.count - officialCount
+                if days.isEmpty {
+                    calibrationHelp = "本周期尚无已发生的统计时段。"
+                } else if officialCount == 0 {
+                    calibrationHelp = "全部使用本地会话记录，尚未采用官方完整日 Token 校准。"
+                } else if localCount == 0 {
+                    calibrationHelp = "每天均采用官方完整日 Token。"
+                } else {
+                    calibrationHelp = "\(officialCount) 天采用官方 Token，\(localCount) 个日内时段使用本地记录。首尾不足一天及今天按本地记录统计。"
+                }
+            } else {
+                calibrationHelp = "保留周期汇总；原始逐日记录不足，暂时无法拆分。"
+            }
             return CycleEntryPresentation(
                 id: item.cycle.startsAt,
                 range: UsageFormatters.cycleRange(
@@ -321,12 +382,16 @@ struct CycleHistoryPresentation: Equatable {
                     endsAt: item.cycle.endsAt,
                     timeZone: timeZone
                 ),
+                startTime: detailDateFormatter.string(from: item.cycle.startsAt),
+                endTime: detailDateFormatter.string(from: item.cycle.endsAt),
+                tokens: item.cycle.displayedTokens,
                 formattedTokens: UsageFormatters.tokens(
                     item.cycle.displayedTokens
                 ),
-                statusLabel: UsageFormatters.calibration(
-                    item.cycle.status
-                ),
+                statusLabel: item.cycle.status == .localLive ? "本地统计"
+                    : UsageFormatters.calibration(item.cycle.status),
+                calibrationHelp: calibrationHelp,
+                dailyUsage: dailyUsage,
                 isCurrent: item.isCurrent,
                 boundaryIsEstimated: item.cycle.boundaryIsEstimated,
                 quotaUsage: recorded != nil ? "最后记录 " + percent + "（记录不完整）"
@@ -334,10 +399,13 @@ struct CycleHistoryPresentation: Equatable {
                 quotaPercent: percent,
                 quotaIsPartial: recorded != nil,
                 quotaHelp: recorded.map {
-                    "最后记录于 " + UsageFormatters.dateTime($0.fetchedAt, timeZone: timeZone)
+                    "最后记录于 " + detailDateFormatter.string(from: $0.fetchedAt)
                         + "：" + percent + "。记录不完整，周期结束时的最终已用额度未知。"
                 } ?? (item.isCurrent
-                    ? "当前周期累计已用额度，来自最近一次官方额度记录。— 表示额度记录不足。"
+                    ? "当前周期累计已用额度，来自最近一次官方额度记录。"
+                        + (item.cycle.quotaUsedPercent == nil ? "额度记录不足。" : snapshot.quota.map {
+                            "采集于 " + detailDateFormatter.string(from: $0.fetchedAt) + "。"
+                        } ?? "")
                     : "该周期结束前 10 分钟内的最后一条官方额度记录。边界为估算或读数异常时不推算百分比；Token 校准状态单独判断。")
             )
         }

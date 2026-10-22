@@ -64,7 +64,7 @@ final class UsageViewModel: ObservableObject {
     private var didAutomaticallyRequestSelection = false
     private var nextRefreshID = 0
     private var lastAppliedRefreshID = -1
-    private var activeRefreshCount = 0
+    private var activeRefreshes: [Int: RefreshReason] = [:]
     private var runtimeID = 0
     private var lifecycleGeneration = 0
     private var notificationFailureCount = 0
@@ -117,7 +117,7 @@ final class UsageViewModel: ObservableObject {
         )
 
         isInitialLoading = false
-        isRefreshing = activeRefreshCount > 0
+        isRefreshing = !activeRefreshes.isEmpty
         guard !didStop else {
             return
         }
@@ -145,6 +145,10 @@ final class UsageViewModel: ObservableObject {
             await start()
             return
         }
+        // 正在进行的交互刷新会持续发布结果，重复打开无需再排一轮。
+        guard !activeRefreshes.values.contains(where: {
+            $0 != .scheduled && $0 != .sessionFilesChanged
+        }) else { return }
         await refresh(reason: .popoverOpened)
     }
 
@@ -346,27 +350,32 @@ final class UsageViewModel: ObservableObject {
         }
 
         let requestID = takeRefreshID()
-        activeRefreshCount += 1
+        activeRefreshes[requestID] = reason
         isRefreshing = !isInitialLoading
         defer {
-            activeRefreshCount -= 1
-            isRefreshing = activeRefreshCount > 0 && !isInitialLoading
+            activeRefreshes[requestID] = nil
+            isRefreshing = !activeRefreshes.isEmpty && !isInitialLoading
         }
 
         do {
             let value = try await runtime.service.refresh(
                 reason: reason,
-                now: environment.now()
+                now: environment.now(),
+                onUpdate: { [weak self] value in
+                    await self?.applyRefreshSnapshot(
+                        value,
+                        requestID: requestID,
+                        runtimeID: requestedRuntimeID
+                    )
+                }
             )
-            guard
-                runtimeID == requestedRuntimeID,
-                requestID >= lastAppliedRefreshID
-            else {
+            guard applyRefreshSnapshot(
+                value,
+                requestID: requestID,
+                runtimeID: requestedRuntimeID
+            ) else {
                 return
             }
-            lastAppliedRefreshID = requestID
-            snapshot = value
-            fatalErrorMessage = nil
             if reason != .startup, value.status != .stale {
                 notificationFailureCount = 0
             }
@@ -391,6 +400,24 @@ final class UsageViewModel: ObservableObject {
             lastAppliedRefreshID = requestID
             fatalErrorMessage = nil
         }
+    }
+
+    @discardableResult
+    private func applyRefreshSnapshot(
+        _ value: UsageSnapshot,
+        requestID: Int,
+        runtimeID expectedRuntimeID: Int
+    ) -> Bool {
+        guard !didStop, runtimeID == expectedRuntimeID,
+              requestID >= lastAppliedRefreshID else {
+            return false
+        }
+        lastAppliedRefreshID = requestID
+        snapshot = value
+        fatalErrorMessage = nil
+        isInitialLoading = false
+        isRefreshing = !activeRefreshes.isEmpty
+        return true
     }
 
     private func startBackgroundTasks(
@@ -563,6 +590,8 @@ final class UsageViewModel: ObservableObject {
         let oldRuntime = runtime
         runtime = nil
         runtimeID += 1
+        activeRefreshes.removeAll()
+        isRefreshing = false
         await oldRuntime?.stop()
         for task in tasks {
             await task.value

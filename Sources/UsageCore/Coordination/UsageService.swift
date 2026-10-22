@@ -64,15 +64,24 @@ public actor UsageService {
         reason: RefreshReason,
         now: Date
     ) async throws -> UsageSnapshot {
+        try await refresh(reason: reason, now: now, onUpdate: nil)
+    }
+
+    public func refresh(
+        reason: RefreshReason,
+        now: Date,
+        onUpdate: (@Sendable (UsageSnapshot) async -> Void)?
+    ) async throws -> UsageSnapshot {
         await acquireOperation()
         defer { releaseOperation() }
         try Task.checkCancellation()
-        return try await refreshLocked(reason: reason, now: now)
+        return try await refreshLocked(reason: reason, now: now, onUpdate: onUpdate)
     }
 
     private func refreshLocked(
         reason: RefreshReason,
-        now: Date
+        now: Date,
+        onUpdate: (@Sendable (UsageSnapshot) async -> Void)?
     ) async throws -> UsageSnapshot {
         try await migrateIfNeeded()
         let wasInitialized = didInitialize
@@ -120,95 +129,118 @@ public actor UsageService {
             return lastBuiltSnapshot
         }
 
-        if shouldRefreshQuota, didInitialize {
-            let response: RateLimitsResponse?
-            do {
-                response = try await accountClient.readRateLimits()
-            } catch {
-                response = nil
+        var indexedFrom: Date?
+        if onUpdate != nil, shouldIndexSessions {
+            let start = try await indexHistoryStart(now: now)
+            indexedFrom = start
+            if try await indexSessions(now: now, modifiedSince: start) {
+                refreshState = recordingSuccess(.sessionIndexing, in: refreshState)
+            } else {
                 operationHadFailure = true
-                refreshState = recordingFailure(.rateLimits, in: refreshState)
-            }
-            if let response {
-                lastFullRateLimits = response
-                if let quota = quotaSelector.select(
-                    from: response,
-                    fetchedAt: now
-                ) {
-                    try await store.save(quota: quota)
-                    refreshState = recordingSuccess(
-                        .rateLimits,
-                        in: refreshState,
-                        at: now
-                    )
-                } else {
-                    operationHadFailure = true
-                    refreshState = recordingFailure(.rateLimits, in: refreshState)
-                }
+                refreshState = recordingFailure(.sessionIndexing, in: refreshState)
             }
         }
 
-        if decision.refreshOfficialUsage, didInitialize {
-            let response: AccountUsageResponse?
-            do {
-                response = try await accountClient.readAccountUsage()
-            } catch {
-                response = nil
-                operationHadFailure = true
-                refreshState = recordingFailure(.officialUsage, in: refreshState)
-            }
-            if let response {
-                if let buckets = response.dailyUsageBuckets {
-                    let conversion = officialDays(from: buckets, fetchedAt: now)
-                    if !conversion.days.isEmpty {
-                        try await store.upsert(officialDays: conversion.days)
+        let refreshQuota = shouldRefreshQuota && didInitialize
+        let refreshOfficialUsage = decision.refreshOfficialUsage && didInitialize
+        if let onUpdate, refreshQuota || refreshOfficialUsage {
+            refreshState = finalizingFailureCount(
+                in: refreshState,
+                previousCount: previousFailureCount,
+                operationHadFailure: operationHadFailure
+            )
+            try await store.save(refreshState: refreshState)
+            await onUpdate(try await buildSnapshot(
+                now: now, updateCycles: true, persistCycles: false
+            ))
+        }
+
+        try await withThrowingTaskGroup(of: RemoteRefreshResult.self) { group in
+            if refreshQuota {
+                group.addTask { [accountClient] in
+                    do {
+                        return .rateLimits(try await accountClient.readRateLimits())
+                    } catch {
+                        try Task.checkCancellation()
+                        return .rateLimits(nil)
                     }
-                    if conversion.hadInvalidBucket {
-                        operationHadFailure = true
-                        refreshState = recordingFailure(
-                            .officialUsage,
-                            in: refreshState
-                        )
+                }
+            }
+            if refreshOfficialUsage {
+                group.addTask { [accountClient] in
+                    do {
+                        return .officialUsage(try await accountClient.readAccountUsage())
+                    } catch {
+                        try Task.checkCancellation()
+                        return .officialUsage(nil)
+                    }
+                }
+            }
+
+            for try await result in group {
+                try Task.checkCancellation()
+                switch result {
+                case let .rateLimits(response):
+                    if let response {
+                        lastFullRateLimits = response
+                    }
+                    if let response,
+                       let quota = quotaSelector.select(from: response, fetchedAt: now) {
+                        try await store.save(quota: quota)
+                        refreshState = recordingSuccess(.rateLimits, in: refreshState, at: now)
+                        // 首次配额可能把历史范围扩大；补齐后再发布，避免漏掉旧周期。
+                        if let indexedFrom {
+                            let start = try await indexHistoryStart(now: now)
+                            if start < indexedFrom {
+                                if try await indexSessions(now: now, modifiedSince: start) {
+                                    refreshState = recordingSuccess(.sessionIndexing, in: refreshState)
+                                } else {
+                                    operationHadFailure = true
+                                    refreshState = recordingFailure(.sessionIndexing, in: refreshState)
+                                }
+                            }
+                        }
                     } else {
-                        refreshState = recordingSuccess(
-                            .officialUsage,
-                            in: refreshState,
-                            at: now
-                        )
+                        operationHadFailure = true
+                        refreshState = recordingFailure(.rateLimits, in: refreshState)
                     }
-                } else {
-                    operationHadFailure = true
-                    refreshState = recordingFailure(.officialUsage, in: refreshState)
+                case let .officialUsage(response):
+                    if let buckets = response?.dailyUsageBuckets {
+                        let conversion = officialDays(from: buckets, fetchedAt: now)
+                        if !conversion.days.isEmpty {
+                            try await store.upsert(officialDays: conversion.days)
+                        }
+                        if conversion.hadInvalidBucket {
+                            operationHadFailure = true
+                            refreshState = recordingFailure(.officialUsage, in: refreshState)
+                        } else {
+                            refreshState = recordingSuccess(.officialUsage, in: refreshState, at: now)
+                        }
+                    } else {
+                        operationHadFailure = true
+                        refreshState = recordingFailure(.officialUsage, in: refreshState)
+                    }
+                }
+
+                if let onUpdate, !group.isEmpty {
+                    refreshState = finalizingFailureCount(
+                        in: refreshState,
+                        previousCount: previousFailureCount,
+                        operationHadFailure: operationHadFailure
+                    )
+                    try await store.save(refreshState: refreshState)
+                    await onUpdate(try await buildSnapshot(
+                        now: now, updateCycles: true, persistCycles: false
+                    ))
                 }
             }
         }
 
-        if shouldIndexSessions {
-            lastSessionIndexAttemptAt = now
-            if let codexHome = homeResolver.resolve(
-                initializedHome: initializedHome,
-                environment: environment,
-                homeDirectory: homeDirectory
+        if shouldIndexSessions, indexedFrom == nil {
+            if try await indexSessions(
+                now: now, modifiedSince: try await indexHistoryStart(now: now)
             ) {
-                do {
-                    _ = try await indexer.index(
-                        codexHome: codexHome,
-                        modifiedSince: try await indexHistoryStart(now: now),
-                        calendar: calendar
-                    )
-                    refreshState = recordingSuccess(
-                        .sessionIndexing,
-                        in: refreshState
-                    )
-                } catch let error as SQLiteStoreError {
-                    throw error
-                } catch {
-                    operationHadFailure = true
-                    refreshState = recordingFailure(
-                        .sessionIndexing,
-                        in: refreshState
-                    )
-                }
+                refreshState = recordingSuccess(.sessionIndexing, in: refreshState)
             } else {
                 operationHadFailure = true
                 refreshState = recordingFailure(.sessionIndexing, in: refreshState)
@@ -221,7 +253,34 @@ public actor UsageService {
             operationHadFailure: operationHadFailure
         )
         try await store.save(refreshState: refreshState)
-        return try await buildSnapshot(now: now, updateCycles: true)
+        let snapshot = try await buildSnapshot(now: now, updateCycles: true)
+        await onUpdate?(snapshot)
+        return snapshot
+    }
+
+    private enum RemoteRefreshResult: Sendable {
+        case rateLimits(RateLimitsResponse?)
+        case officialUsage(AccountUsageResponse?)
+    }
+
+    private func indexSessions(now: Date, modifiedSince: Date) async throws -> Bool {
+        lastSessionIndexAttemptAt = now
+        guard let codexHome = homeResolver.resolve(
+            initializedHome: initializedHome,
+            environment: environment,
+            homeDirectory: homeDirectory
+        ) else { return false }
+        do {
+            _ = try await indexer.index(
+                codexHome: codexHome, modifiedSince: modifiedSince, calendar: calendar
+            )
+            return true
+        } catch let error as SQLiteStoreError {
+            throw error
+        } catch {
+            try Task.checkCancellation()
+            return false
+        }
     }
 
     public func processNextAccountNotification(
@@ -406,7 +465,8 @@ public actor UsageService {
 
     private func buildSnapshot(
         now: Date,
-        updateCycles: Bool
+        updateCycles: Bool,
+        persistCycles: Bool = true
     ) async throws -> UsageSnapshot {
         var cycles = try await store.cycles()
         let quota = try await store.latestQuota()
@@ -439,8 +499,10 @@ public actor UsageService {
                 events: events,
                 quotaHistory: quotaHistory
             )
-            try await store.replace(cycles: cycles)
-            if cycles.count == 9, let earliest = cycles.first {
+            if persistCycles {
+                try await store.replace(cycles: cycles)
+            }
+            if persistCycles, cycles.count == 9, let earliest = cycles.first {
                 let todayStart = calendar.startOfDay(for: now)
                 let recentDaysStart = calendar.date(byAdding: .day, value: -6, to: todayStart)
                     ?? todayStart.addingTimeInterval(-6 * 24 * 60 * 60)

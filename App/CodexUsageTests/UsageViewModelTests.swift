@@ -355,11 +355,114 @@ final class UsageViewModelTests: XCTestCase {
 
         await fixture.service.resumeNext(.wake, with: .success(newer))
         await newerTask.value
+        await fixture.service.publishProgress(older, for: .manual)
+        XCTAssertEqual(fixture.viewModel.snapshot, newer)
         await fixture.service.resumeNext(.manual, with: .success(older))
         await olderTask.value
 
         XCTAssertEqual(fixture.viewModel.snapshot, newer)
         XCTAssertEqual(fixture.viewModel.menuBarTitle, "45%")
+        await fixture.viewModel.stop()
+    }
+
+    func testPopoverReusesPendingManualRefresh() async throws {
+        let fixture = ViewModelFixture(snapshot: try sampleSnapshot())
+        await fixture.viewModel.start()
+        await fixture.service.suspendNext(.manual)
+        let refreshTask = Task { await fixture.viewModel.refreshManually() }
+        await fixture.service.waitForReason(.manual)
+
+        await fixture.viewModel.openPopover()
+        await fixture.viewModel.openPopover()
+
+        let reasons = await fixture.service.reasons()
+        XCTAssertEqual(reasons, [.startup, .manual])
+        XCTAssertTrue(fixture.viewModel.isRefreshing)
+        await fixture.service.resumeNext(.manual, with: .success(try sampleSnapshot()))
+        await refreshTask.value
+        XCTAssertFalse(fixture.viewModel.isRefreshing)
+        await fixture.viewModel.stop()
+    }
+
+    func testRepeatedPopoverOpensDoNotQueueRefreshes() async throws {
+        let fixture = ViewModelFixture(snapshot: try sampleSnapshot())
+        await fixture.viewModel.start()
+        await fixture.service.suspendNext(.popoverOpened)
+        let refreshTask = Task { await fixture.viewModel.openPopover() }
+        await fixture.service.waitForReason(.popoverOpened)
+
+        await fixture.viewModel.openPopover()
+        await fixture.viewModel.openPopover()
+
+        let reasons = await fixture.service.reasons()
+        XCTAssertEqual(reasons, [.startup, .popoverOpened])
+        await fixture.service.resumeNext(.popoverOpened, with: .success(try sampleSnapshot()))
+        await refreshTask.value
+        await fixture.viewModel.stop()
+    }
+
+    func testRefreshPublishesProgressBeforeOfficialRequestsFinish() async throws {
+        let fixture = ViewModelFixture(snapshot: try sampleSnapshot())
+        let local = try sampleSnapshot(remainingPercent: 55)
+        let final = try sampleSnapshot(remainingPercent: 50)
+        await fixture.viewModel.start()
+        await fixture.service.suspendNext(.manual)
+        let refreshTask = Task { await fixture.viewModel.refreshManually() }
+        await fixture.service.waitForReason(.manual)
+
+        await fixture.service.publishProgress(local, for: .manual)
+
+        XCTAssertEqual(fixture.viewModel.snapshot, local)
+        XCTAssertTrue(fixture.viewModel.isRefreshing)
+        await fixture.service.resumeNext(.manual, with: .success(final))
+        await refreshTask.value
+        XCTAssertEqual(fixture.viewModel.snapshot, final)
+        XCTAssertFalse(fixture.viewModel.isRefreshing)
+        await fixture.viewModel.stop()
+    }
+
+    func testStartupShowsLocalSnapshotWhileOfficialRequestsArePending() async throws {
+        let local = try sampleSnapshot(status: .stale)
+        let fixture = ViewModelFixture(snapshot: try sampleSnapshot())
+        await fixture.service.suspendNext(.startup)
+        let startTask = Task { await fixture.viewModel.start() }
+        await fixture.service.waitForReason(.startup)
+
+        await fixture.service.publishProgress(local, for: .startup)
+
+        XCTAssertEqual(fixture.viewModel.snapshot, local)
+        XCTAssertFalse(fixture.viewModel.isInitialLoading)
+        XCTAssertTrue(fixture.viewModel.isRefreshing)
+        await fixture.service.resumeNext(.startup, with: .success(try sampleSnapshot()))
+        await startTask.value
+        XCTAssertFalse(fixture.viewModel.isRefreshing)
+        await fixture.viewModel.stop()
+    }
+
+    func testOldRuntimeRefreshDoesNotBlockNewRuntimePopover() async throws {
+        let current = try sampleSnapshot(remainingPercent: 50)
+        let obsolete = try sampleSnapshot(remainingPercent: 80)
+        let fixture = ViewModelFixture(
+            snapshot: current,
+            chosenHome: try trackedValidCodexHome()
+        )
+        await fixture.viewModel.start()
+        await fixture.service.suspendNext(.manual)
+        let oldTask = Task { await fixture.viewModel.refreshManually() }
+        await fixture.service.waitForReason(.manual)
+
+        await fixture.viewModel.chooseCodexHome()
+        await fixture.service.publishProgress(obsolete, for: .manual)
+        XCTAssertEqual(fixture.viewModel.snapshot, current)
+        XCTAssertFalse(fixture.viewModel.isRefreshing)
+
+        await fixture.viewModel.openPopover()
+        let reasons = await fixture.service.reasons()
+        XCTAssertEqual(reasons, [.startup, .manual, .startup, .popoverOpened])
+        await fixture.service.resumeNext(.manual, with: .success(obsolete))
+        await oldTask.value
+        XCTAssertEqual(fixture.viewModel.snapshot, current)
+        XCTAssertFalse(fixture.viewModel.isRefreshing)
         await fixture.viewModel.stop()
     }
 
@@ -887,6 +990,7 @@ private actor FakeUsageService: UsageServicing {
     private var reasonWaiters: [ReasonWaiter] = []
     private var notificationCallCount = 0
     private var recordedNotificationDates: [Date] = []
+    private var progressHandlers: [RecordedRefreshReason: @Sendable (UsageSnapshot) async -> Void] = [:]
 
     init(
         defaultOutcome: FakeRefreshOutcome,
@@ -923,6 +1027,21 @@ private actor FakeUsageService: UsageServicing {
         return try await withCheckedThrowingContinuation { continuation in
             pending[recorded, default: []].append(continuation)
         }
+    }
+
+    func refresh(
+        reason: RefreshReason,
+        now: Date,
+        onUpdate: (@Sendable (UsageSnapshot) async -> Void)?
+    ) async throws -> UsageSnapshot {
+        let recorded = RecordedRefreshReason(reason)
+        progressHandlers[recorded] = onUpdate
+        defer { progressHandlers[recorded] = nil }
+        return try await refresh(reason: reason, now: now)
+    }
+
+    func publishProgress(_ snapshot: UsageSnapshot, for reason: RecordedRefreshReason) async {
+        await progressHandlers[reason]?(snapshot)
     }
 
     func processNextAccountNotification(now: @Sendable () -> Date) async throws -> UsageSnapshot? {

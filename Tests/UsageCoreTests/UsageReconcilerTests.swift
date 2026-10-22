@@ -2,6 +2,20 @@ import XCTest
 @testable import UsageCore
 
 final class UsageReconcilerTests: XCTestCase {
+    func testPartialBoundaryWithoutOfficialCoverageRemainsLocal() throws {
+        let start = try date("2026-08-28T12:00:00+08:00")
+        let end = try date("2026-09-04T12:00:00+08:00")
+        let now = try date("2026-08-31T12:00:00+08:00")
+        let snapshot = UsageReconciler().snapshot(
+            now: now, calendar: shanghaiCalendar(), quota: nil,
+            events: [], officialDays: [],
+            cycles: [quotaCycle(startsAt: start, endsAt: end, usage: .zero)],
+            lastUpdatedAt: now
+        )
+
+        XCTAssertEqual(snapshot.currentCycle?.status, .localLive)
+    }
+
     func testOfficialBucketReplacesOnlyCompletedNaturalDay() throws {
         let calendar = shanghaiCalendar()
         let now = try date("2026-08-31T12:00:00+08:00")
@@ -224,9 +238,9 @@ final class UsageReconcilerTests: XCTestCase {
         XCTAssertEqual(snapshot.currentCycle?.usage, event.usage)
         XCTAssertEqual(
             snapshot.currentCycle?.status,
-            .partiallyCalibrated
+            .localLive
         )
-        XCTAssertEqual(snapshot.status, .partiallyCalibrated)
+        XCTAssertEqual(snapshot.status, .localLive)
     }
 
     func testCycleUsesOfficialTokensForEveryCoveredCompletedDay() throws {
@@ -297,7 +311,7 @@ final class UsageReconcilerTests: XCTestCase {
 
         XCTAssertEqual(snapshot.currentCycle?.usage, localUsage)
         XCTAssertEqual(snapshot.currentCycle?.displayedTokens, 820)
-        XCTAssertEqual(snapshot.currentCycle?.status, .calibrated)
+        XCTAssertEqual(snapshot.currentCycle?.status, .partiallyCalibrated)
     }
 
     func testCycleWithMissingOfficialCoverageIsPartiallyCalibrated() throws {
@@ -383,7 +397,7 @@ final class UsageReconcilerTests: XCTestCase {
         XCTAssertEqual(snapshot.currentCycle?.displayedTokens, 0)
         XCTAssertEqual(
             snapshot.currentCycle?.status,
-            .partiallyCalibrated
+            .localLive
         )
     }
 
@@ -424,7 +438,7 @@ final class UsageReconcilerTests: XCTestCase {
         XCTAssertEqual(snapshot.currentCycle?.displayedTokens, 100)
         XCTAssertEqual(
             snapshot.currentCycle?.status,
-            .partiallyCalibrated
+            .localLive
         )
     }
 
@@ -478,7 +492,7 @@ final class UsageReconcilerTests: XCTestCase {
         )
 
         XCTAssertEqual(snapshot.currentCycle?.displayedTokens, 0)
-        XCTAssertEqual(snapshot.currentCycle?.status, .calibrated)
+        XCTAssertEqual(snapshot.currentCycle?.status, .partiallyCalibrated)
     }
 
     func testOfficialFullDayCanReplaceZeroLocalUsage() throws {
@@ -521,7 +535,7 @@ final class UsageReconcilerTests: XCTestCase {
         )
 
         XCTAssertEqual(snapshot.currentCycle?.displayedTokens, 60)
-        XCTAssertEqual(snapshot.currentCycle?.status, .calibrated)
+        XCTAssertEqual(snapshot.currentCycle?.status, .partiallyCalibrated)
     }
 
     func testOnlyFullIntermediateDayUsesOfficialTokens() throws {
@@ -682,7 +696,7 @@ final class UsageReconcilerTests: XCTestCase {
             lastUpdatedAt: now
         )
 
-        XCTAssertEqual(snapshot.status, .partiallyCalibrated)
+        XCTAssertEqual(snapshot.status, .localLive)
     }
 
     func testQuotaOlderThanTenMinutesMakesSnapshotStale() throws {
@@ -717,8 +731,8 @@ final class UsageReconcilerTests: XCTestCase {
             usage: .zero
         )
         let fixtures: [(offset: TimeInterval, expected: UsageCalibrationStatus)] = [
-            (-600, .partiallyCalibrated),
-            (600, .partiallyCalibrated),
+            (-600, .localLive),
+            (600, .localLive),
             (-601, .stale),
             (601, .stale)
         ]
@@ -789,7 +803,7 @@ final class UsageReconcilerTests: XCTestCase {
             50
         )
         XCTAssertEqual(forward.currentCycle?.displayedTokens, 50)
-        XCTAssertEqual(forward.currentCycle?.status, .calibrated)
+        XCTAssertEqual(forward.currentCycle?.status, .partiallyCalibrated)
     }
 
     func testConflictingLatestOfficialDayIsRejectedIndependentOfOrder() throws {
@@ -836,7 +850,7 @@ final class UsageReconcilerTests: XCTestCase {
             50
         )
         XCTAssertEqual(snapshot.currentCycle?.displayedTokens, 50)
-        XCTAssertEqual(snapshot.currentCycle?.status, .calibrated)
+        XCTAssertEqual(snapshot.currentCycle?.status, .partiallyCalibrated)
     }
 
     private func shanghaiCalendar() -> Calendar {
