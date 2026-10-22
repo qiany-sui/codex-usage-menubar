@@ -34,7 +34,8 @@ public struct SessionLineParser: Sendable {
             occurredAt: occurredAt,
             lastUsage: lastUsage,
             totalUsage: totalUsage,
-            schemaVariant: schemaVariant
+            schemaVariant: schemaVariant,
+            quota: tokenEvent.payload?.rateLimits?.quota(at: occurredAt)
         )
     }
 
@@ -107,6 +108,19 @@ private struct SessionTokenEnvelope: Decodable {
 
     struct Payload: Decodable {
         let info: Info?
+        let rateLimits: SessionRateLimits?
+
+        private enum CodingKeys: String, CodingKey {
+            case info
+            case rateLimits = "rate_limits"
+        }
+
+        init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            info = try container.decodeIfPresent(Info.self, forKey: .info)
+            // 附带额度损坏时仍保留有效的 Token 事件。
+            rateLimits = try? container.decodeIfPresent(SessionRateLimits.self, forKey: .rateLimits)
+        }
     }
 
     struct Info: Decodable {
@@ -131,6 +145,45 @@ private struct SessionTokenEnvelope: Decodable {
             case outputTokens = "output_tokens"
             case reasoningOutputTokens = "reasoning_output_tokens"
         }
+    }
+}
+
+private struct SessionRateLimits: Decodable {
+    let limitID: String?
+    let primary: Window?
+    let secondary: Window?
+
+    enum CodingKeys: String, CodingKey {
+        case limitID = "limit_id"
+        case primary, secondary
+    }
+
+    struct Window: Decodable {
+        let usedPercent: Double
+        let windowMinutes: Int
+        let resetsAt: Int64
+
+        enum CodingKeys: String, CodingKey {
+            case usedPercent = "used_percent"
+            case windowMinutes = "window_minutes"
+            case resetsAt = "resets_at"
+        }
+
+        var value: RateLimitWindow? {
+            guard usedPercent.isFinite, usedPercent >= 0 else { return nil }
+            return RateLimitWindow(usedPercent: usedPercent, windowDurationMins: windowMinutes, resetsAt: resetsAt)
+        }
+    }
+
+    func quota(at timestamp: Date) -> QuotaSnapshot? {
+        let response = RateLimitsResponse(
+            rateLimits: RateLimitBucket(limitId: limitID ?? "codex", limitName: nil,
+                                        primary: primary?.value, secondary: secondary?.value),
+            rateLimitsByLimitId: nil
+        )
+        guard let quota = WeeklyQuotaSelector().select(from: response, fetchedAt: timestamp),
+              quota.startsAt.timeIntervalSince(timestamp) <= 60, timestamp <= quota.resetsAt else { return nil }
+        return quota
     }
 }
 

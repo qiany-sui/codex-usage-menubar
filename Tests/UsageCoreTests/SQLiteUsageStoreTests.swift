@@ -592,7 +592,7 @@ final class SQLiteUsageStoreTests: XCTestCase {
             let connection = try SQLiteConnection(databaseURL: databaseURL)
             try connection.execute(
                 """
-                INSERT INTO quota_snapshots
+                INSERT INTO quota_snapshots (fetched_at, limit_id, used_percent, window_duration_minutes, starts_at, resets_at)
                 VALUES (100, CAST(x'80' AS TEXT), 25, 10080, 0, 200);
                 """,
                 operation: "test fixture"
@@ -847,7 +847,8 @@ final class SQLiteUsageStoreTests: XCTestCase {
                 INSERT INTO usage_events VALUES (x'01', 100, '2026-08-31', 1, 2, 0);
                 INSERT INTO file_cursors VALUES (x'02', 1, 2, -1, NULL, NULL, NULL);
                 INSERT INTO official_usage_days VALUES ('2026-08-31', 1, 1e999);
-                INSERT INTO quota_snapshots VALUES (100, 'codex', 25, 10080, 1e999, 200);
+                INSERT INTO quota_snapshots (fetched_at, limit_id, used_percent, window_duration_minutes, starts_at, resets_at)
+                VALUES (100, 'codex', 25, 10080, 1e999, 200);
                 INSERT INTO quota_cycles VALUES (100, 200, 1, 0, 0, -1, 'localLive', 0);
                 """,
                 operation: "test fixture"

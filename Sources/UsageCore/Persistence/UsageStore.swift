@@ -91,6 +91,7 @@ public protocol UsageStore: Actor {
     func migrate() throws
     func insert(events: [StoredUsageEvent]) throws -> Int
     func ingest(events: [StoredUsageEvent], cursor: FileCursor) throws -> Int
+    func ingest(events: [StoredUsageEvent], quotas: [QuotaSnapshot], cursor: FileCursor) throws -> Int
     func events(from: Date, to: Date) throws -> [StoredUsageEvent]
     func cursor(for pathHash: Data) throws -> FileCursor?
     func save(cursor: FileCursor) throws

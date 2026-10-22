@@ -138,6 +138,7 @@ public actor SessionUsageIndexer {
 
         var accumulator = SessionUsageAccumulator(state: initialState)
         var events: [StoredUsageEvent] = []
+        var quotas: [QuotaSnapshot] = []
         let completeData = unread.prefix(completeByteCount)
         for line in completeData.split(
             separator: 0x0A,
@@ -147,6 +148,8 @@ public actor SessionUsageIndexer {
                 guard let record = try parser.parse(line: Data(line)) else {
                     continue
                 }
+                // 额度通知可能没有 Token 增量，必须先保存，不能被累加器跳过。
+                if let quota = record.quota { quotas.append(quota) }
                 var candidateAccumulator = accumulator
                 guard let event = try candidateAccumulator.ingest(record) else {
                     accumulator = candidateAccumulator
@@ -186,7 +189,7 @@ public actor SessionUsageIndexer {
         guard try snapshot(of: opened.handle) == opened.snapshot else {
             return 0
         }
-        let inserted = try await store.ingest(events: events, cursor: cursor)
+        let inserted = try await store.ingest(events: events, quotas: quotas, cursor: cursor)
         indexedSnapshots[standardized] = opened.snapshot
         return inserted
     }

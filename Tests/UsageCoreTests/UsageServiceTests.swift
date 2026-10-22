@@ -186,6 +186,11 @@ actor ReadOnlyUsageStoreSpy: UsageStore {
         return events.count
     }
 
+    func ingest(events: [StoredUsageEvent], quotas: [QuotaSnapshot], cursor: FileCursor) throws -> Int {
+        writeCount += 1
+        return events.count
+    }
+
     func events(from: Date, to: Date) throws -> [StoredUsageEvent] {
         snapshotReadCount += 1
         return storedEvents.filter {
