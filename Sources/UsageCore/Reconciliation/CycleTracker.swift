@@ -117,6 +117,10 @@ public struct CycleTracker: Sendable {
         var resetStart = quota.startsAt
         var hasConsumedQuota = false
         for observation in observations {
+            // 重置附近的新旧会话记录可能交错；旧周期不能改写已确认的归属或倒退重置状态。
+            if let knownStart = starts[observation.startsAt], knownStart < resetStart {
+                continue
+            }
             var continuesReset = false
             if let previous,
                previous.windowDurationMinutes == observation.windowDurationMinutes {

@@ -4,6 +4,48 @@ import XCTest
 @testable import UsageCore
 
 final class SessionQuotaBackfillTests: XCTestCase {
+    func testInterleavedResetReadingsPreserveCompletedCycleClosingQuota() async throws {
+        let root = try temporaryCodexHome()
+        let store = try SQLiteUsageStore(databaseURL: try temporaryDatabaseURL())
+        try await store.migrate()
+        let official = try [
+            quota(0, "2026-10-26T14:09:12+08:00", reset: "2026-11-02T14:09:10+08:00"),
+            quota(1, "2026-10-26T14:10:00+08:00", reset: "2026-11-02T14:09:27+08:00"),
+            quota(70, "2026-10-28T00:00:00+08:00", reset: "2026-11-02T14:09:26+08:00"),
+            quota(86, "2026-10-28T14:14:42+08:00", reset: "2026-11-02T14:09:26+08:00"),
+            quota(87, "2026-10-28T14:34:38+08:00", reset: "2026-11-02T14:09:27+08:00"),
+            quota(0, "2026-10-28T14:37:19+08:00", reset: "2026-11-04T14:36:55+08:00")
+        ]
+        for poll in official { try await store.save(quota: poll) }
+        // 新周期先出现在日志里，随后另一个会话仍带回旧周期的临近结束记录。
+        try write([
+            line(0, "2026-10-28T14:36:37+08:00", reset: "2026-11-04T14:36:35+08:00"),
+            line(87, "2026-10-28T14:36:38+08:00", reset: "2026-11-02T14:09:27+08:00")
+        ], to: root)
+        _ = try await SessionUsageIndexer(store: store).index(
+            codexHome: root, modifiedSince: .distantPast, calendar: calendar
+        )
+        let history = try await store.quotaHistory(from: .distantPast, to: .distantFuture, limitID: "codex")
+        XCTAssertEqual(history.map(\.usedPercent), [0, 1, 70, 86, 87, 0, 87, 0])
+        let latest = try XCTUnwrap(official.last)
+        let tracker = CycleTracker()
+        let existing = tracker.update(existing: [], quota: official[0], events: [])
+        let cycles = tracker.update(existing: existing, quota: latest, events: [], quotaHistory: history)
+        XCTAssertEqual(cycles.filter { !$0.boundaryIsEstimated }.map(\.startsAt),
+                       [try date("2026-10-26T14:09:10+08:00"), try date("2026-10-28T14:36:55+08:00")])
+        let result = UsageReconciler().snapshot(
+            now: latest.fetchedAt, calendar: calendar, quota: latest, events: [],
+            officialDays: [], cycles: cycles, lastUpdatedAt: latest.fetchedAt, quotaHistory: history
+        )
+        let completed = try XCTUnwrap(result.cycleHistory.first)
+        XCTAssertEqual(completed.quotaUsedPercent, 87)
+        XCTAssertNil(completed.lastRecordedQuota)
+        XCTAssertEqual(result.today.quotaSegments?.count, 2)
+        XCTAssertEqual(result.today.quotaSegments?.first?.consumedPercent, 17)
+        XCTAssertEqual(result.currentCycle?.quotaUsedPercent, 0)
+        try await store.close()
+    }
+
     func testBackfillDoesNotSplitPendingOfficialStartCorrection() async throws {
         for sessionReset in ["2026-10-29T09:00:00+08:00", "2026-10-29T09:02:00+08:00"] {
             let root = try temporaryCodexHome()
