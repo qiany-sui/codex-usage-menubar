@@ -33,7 +33,9 @@ public struct RefreshPolicy: Sendable {
         reason: RefreshReason,
         lastQuotaRefresh: Date?,
         lastOfficialRefresh: Date?,
-        consecutiveFailures: Int
+        consecutiveFailures: Int,
+        calendar: Calendar = .current,
+        quotaResetsAt: Date? = nil
     ) -> RefreshDecision {
         _ = consecutiveFailures
         switch reason {
@@ -54,7 +56,7 @@ public struct RefreshPolicy: Sendable {
                 refreshQuota: isDue(
                     now: now,
                     lastRefresh: lastQuotaRefresh,
-                    interval: 300
+                    interval: isNearQuotaBoundary(now: now, calendar: calendar, resetsAt: quotaResetsAt) ? 60 : 300
                 ),
                 refreshOfficialUsage: isDue(
                     now: now,
@@ -83,6 +85,14 @@ public struct RefreshPolicy: Sendable {
     public func retryDelay(consecutiveFailures: Int) -> Duration {
         let exponent = min(max(consecutiveFailures, 0), 5)
         return .seconds(min(30 * (1 << exponent), 900))
+    }
+
+    private func isNearQuotaBoundary(now: Date, calendar: Calendar, resetsAt: Date?) -> Bool {
+        if let day = calendar.dateInterval(of: .day, for: now),
+           now.timeIntervalSince(day.start) < 600 || day.end.timeIntervalSince(now) <= 600 {
+            return true
+        }
+        return resetsAt.map { (0...600).contains($0.timeIntervalSince(now)) } ?? false
     }
 
     private func isDue(

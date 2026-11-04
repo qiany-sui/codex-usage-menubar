@@ -614,6 +614,70 @@ final class UsageViewModelTests: XCTestCase {
         await fixture.viewModel.stop()
     }
 
+    func testStopWaitsForFinalQuotaCaptureBeforeClosingRuntime() async throws {
+        let fixture = ViewModelFixture(snapshot: try sampleSnapshot())
+        let captureSleeper = ControlledSleeper()
+        await fixture.service.suspendFinalCapture(using: captureSleeper)
+        await fixture.viewModel.start()
+        let stop = Task { await fixture.viewModel.stop() }
+        try await captureSleeper.waitForRequest(.seconds(3_600))
+
+        XCTAssertEqual(fixture.runtimeBuilder.stopCount, 0)
+        await fixture.viewModel.stop()
+        let dates = await fixture.service.finalCaptureDates()
+        XCTAssertEqual(dates, [Date(timeIntervalSince1970: 1788249600)])
+        try await captureSleeper.resumeNext(expected: .seconds(3_600))
+        await stop.value
+        XCTAssertEqual(fixture.runtimeBuilder.stopCount, 1)
+        XCTAssertEqual(fixture.bookmarkStore.releaseCount, 1)
+    }
+
+    func testStopCancelsFinalCaptureAfterThreeSecondsAndStillCleansUp() async throws {
+        let fixture = ViewModelFixture(snapshot: try sampleSnapshot())
+        let captureSleeper = ControlledSleeper()
+        await fixture.service.suspendFinalCapture(using: captureSleeper)
+        await fixture.viewModel.start()
+        let stop = Task { await fixture.viewModel.stop() }
+        try await captureSleeper.waitForRequest(.seconds(3_600))
+        try await fixture.sleeper.resumeNext(expected: .seconds(3))
+        await stop.value
+
+        let cancelled = await fixture.service.wasFinalCaptureCancelled()
+        XCTAssertTrue(cancelled)
+        XCTAssertEqual(fixture.runtimeBuilder.stopCount, 1)
+        XCTAssertEqual(fixture.bookmarkStore.releaseCount, 1)
+    }
+
+    func testFinalCaptureFailureDoesNotPreventExit() async throws {
+        let fixture = ViewModelFixture(refreshError: FakeViewModelError.unavailable)
+        await fixture.viewModel.start()
+
+        await fixture.viewModel.stop()
+
+        let dates = await fixture.service.finalCaptureDates()
+        XCTAssertEqual(dates.count, 1)
+        XCTAssertEqual(fixture.runtimeBuilder.stopCount, 1)
+        XCTAssertEqual(fixture.bookmarkStore.releaseCount, 1)
+    }
+
+    func testExitDeadlineStartsCleanupEvenWhenCaptureIgnoresCancellation() async throws {
+        let fixture = ViewModelFixture(snapshot: try sampleSnapshot())
+        await fixture.service.suspendFinalCaptureIgnoringCancellation()
+        await fixture.viewModel.start()
+        let stopped = expectation(description: "退出时限到达后完成清理")
+        let stop = Task {
+            await fixture.viewModel.stop()
+            stopped.fulfill()
+        }
+        await fixture.service.waitForUncancellableCapture()
+        try await fixture.sleeper.resumeNext(expected: .seconds(3))
+
+        await fulfillment(of: [stopped], timeout: 0.5)
+        XCTAssertEqual(fixture.runtimeBuilder.stopCount, 1)
+        await fixture.service.resumeFinalCapture()
+        await stop.value
+    }
+
     func testStopCancelsLoopsStopsWatcherRuntimeAndBookmarkAccess() async throws {
         let fixture = ViewModelFixture(snapshot: try sampleSnapshot())
         await fixture.viewModel.start()
@@ -978,6 +1042,11 @@ private enum FakeNotificationEvent: Sendable {
 }
 
 private actor FakeUsageService: UsageServicing {
+    private var capturedDates: [Date] = []
+    private var captureSleeper: ControlledSleeper?
+    private var captureWasCancelled = false
+    private var ignoresCaptureCancellation = false
+    private var captureContinuation: CheckedContinuation<Void, Never>?
     private let defaultOutcome: FakeRefreshOutcome
     private let notificationStream: AsyncStream<FakeNotificationEvent>
     private let notificationContinuation:
@@ -1069,6 +1138,48 @@ private actor FakeUsageService: UsageServicing {
             }
         }
         return nil
+    }
+
+    func captureQuotaBeforeExit(now: Date) async throws {
+        capturedDates.append(now)
+        if ignoresCaptureCancellation {
+            await withCheckedContinuation { captureContinuation = $0 }
+        }
+        do {
+            try await captureSleeper?.sleep(for: .seconds(3_600))
+        } catch {
+            captureWasCancelled = error is CancellationError
+            throw error
+        }
+        _ = try defaultOutcome.get()
+    }
+
+    func suspendFinalCapture(using sleeper: ControlledSleeper) {
+        captureSleeper = sleeper
+    }
+
+    func suspendFinalCaptureIgnoringCancellation() { ignoresCaptureCancellation = true }
+
+    func waitForUncancellableCapture() async {
+        for _ in 0..<2_000 {
+            if captureContinuation != nil { return }
+            await Task.yield()
+        }
+        XCTFail("等待最后一次采集开始超时")
+    }
+
+    func resumeFinalCapture() {
+        captureContinuation?.resume()
+        captureContinuation = nil
+    }
+
+    func finalCaptureDates() -> [Date] { capturedDates }
+    func wasFinalCaptureCancelled() async -> Bool {
+        for _ in 0..<2_000 {
+            if captureWasCancelled { return true }
+            await Task.yield()
+        }
+        return false
     }
 
     func currentSnapshot(now: Date) async throws -> UsageSnapshot {

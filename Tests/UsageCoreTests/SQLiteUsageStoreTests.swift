@@ -3,6 +3,28 @@ import XCTest
 @testable import UsageCore
 
 final class SQLiteUsageStoreTests: XCTestCase {
+    func testCancelledQuotaSaveDoesNotWriteAfterExitDeadline() async throws {
+        let store = try SQLiteUsageStore(databaseURL: try databaseURLWithCleanup())
+        try await store.migrate()
+        let quota = QuotaSnapshot(
+            limitID: "codex", usedPercent: 42, windowDurationMinutes: 10_080,
+            startsAt: Date(timeIntervalSince1970: 0),
+            resetsAt: Date(timeIntervalSince1970: 604_800),
+            fetchedAt: Date(timeIntervalSince1970: 100)
+        )
+        let save = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            try await store.save(quota: quota)
+        }
+        do {
+            try await save.value
+            XCTFail("退出时限后取消的采集不能继续写入")
+        } catch is CancellationError {}
+        let latest = try await store.latestQuota()
+        XCTAssertNil(latest)
+        try await store.close()
+    }
+
     func testRefreshStateSurvivesDatabaseReopenWithoutRawErrorText() async throws {
         let databaseURL = try databaseURLWithCleanup()
         let state = UsageRefreshState(

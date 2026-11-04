@@ -263,6 +263,27 @@ final class UsageViewModel: ObservableObject {
             return
         }
         didStop = true
+        schedulerTask?.cancel()
+        watcherTask?.cancel()
+        notificationTask?.cancel()
+        retryTask?.cancel()
+        if let runtime {
+            let now = environment.now()
+            let sleep = environment.sleep
+            // 时限只等待完成信号，不能用会等待未结束子任务的 task group。
+            let completion = AsyncStream<Void>.makeStream()
+            let capture = Task {
+                try? await runtime.service.captureQuotaBeforeExit(now: now)
+                completion.continuation.finish()
+            }
+            let timeout = Task {
+                try? await sleep(.seconds(3))
+                completion.continuation.finish()
+            }
+            for await _ in completion.stream {}
+            capture.cancel()
+            timeout.cancel()
+        }
         await stopBackgroundTasks()
         bookmarkStore.releaseAccess()
     }

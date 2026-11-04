@@ -60,6 +60,17 @@ public actor UsageService {
         self.policy = policy
     }
 
+    public func captureQuotaBeforeExit(now: Date) async throws {
+        guard didMigrate, didInitialize else { return }
+        // 退出只保存额度快照，不排在日志扫描或每日 Token 请求后面。
+        try Task.checkCancellation()
+        let response = try await accountClient.readRateLimits()
+        try Task.checkCancellation()
+        if let quota = quotaSelector.select(from: response, fetchedAt: now) {
+            try await store.save(quota: quota)
+        }
+    }
+
     public func refresh(
         reason: RefreshReason,
         now: Date
@@ -112,7 +123,9 @@ public actor UsageService {
             reason: reason,
             lastQuotaRefresh: refreshState.lastSuccessfulQuotaRefreshAt,
             lastOfficialRefresh: refreshState.lastSuccessfulOfficialUsageRefreshAt,
-            consecutiveFailures: refreshState.consecutiveFailureCount
+            consecutiveFailures: refreshState.consecutiveFailureCount,
+            calendar: calendar,
+            quotaResetsAt: lastBuiltSnapshot?.quota?.resetsAt
         )
         let cachedQuotaHasReset = lastBuiltSnapshot?.quota.map {
             now >= $0.resetsAt

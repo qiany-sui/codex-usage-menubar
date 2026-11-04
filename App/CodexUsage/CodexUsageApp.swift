@@ -16,7 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         _ sender: NSApplication
     ) -> NSApplication.TerminateReply {
         guard !isTerminating else {
-            return .terminateNow
+            return .terminateLater
         }
         isTerminating = true
 

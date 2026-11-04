@@ -2,6 +2,7 @@ import Foundation
 import UsageCore
 
 protocol UsageServicing: Actor {
+    func captureQuotaBeforeExit(now: Date) async throws
     func refresh(
         reason: RefreshReason,
         now: Date

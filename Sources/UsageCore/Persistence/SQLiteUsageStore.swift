@@ -370,6 +370,8 @@ public actor SQLiteUsageStore: UsageStore {
     }
 
     public func save(quota: QuotaSnapshot) throws {
+        // 退出采集可能在 actor 队列中超时，入库前再检查一次取消。
+        try Task.checkCancellation()
         try saveQuota(quota, isFromSession: false)
     }
 

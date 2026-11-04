@@ -3,6 +3,57 @@ import XCTest
 @testable import UsageCore
 
 final class RefreshPolicyTests: XCTestCase {
+    func testMidnightSamplingUsesLocalDayAndOnlyItsTenMinuteEdges() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        for (timestamp, expected) in [
+            ("2026-10-22T15:49:59Z", false),
+            ("2026-10-22T15:50:00Z", true),
+            ("2026-10-22T15:59:59Z", true),
+            ("2026-10-22T16:00:00Z", true),
+            ("2026-10-22T16:09:59Z", true),
+            ("2026-10-22T16:10:00Z", false),
+            ("2026-10-22T23:55:00Z", false)
+        ] {
+            let now = try date(timestamp)
+            let decision = RefreshPolicy().decision(
+                now: now, reason: .scheduled,
+                lastQuotaRefresh: now.addingTimeInterval(-60),
+                lastOfficialRefresh: now.addingTimeInterval(-60), consecutiveFailures: 0,
+                calendar: calendar
+            )
+            XCTAssertEqual(decision.refreshQuota, expected, timestamp)
+            XCTAssertFalse(decision.refreshOfficialUsage)
+            XCTAssertFalse(decision.indexSessions)
+        }
+    }
+
+    func testBoundarySamplingDoesNotPollMoreThanOncePerMinute() throws {
+        let now = try date("2026-10-22T23:55:00Z")
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let decision = RefreshPolicy().decision(
+            now: now, reason: .scheduled, lastQuotaRefresh: now.addingTimeInterval(-59),
+            lastOfficialRefresh: now, consecutiveFailures: 0, calendar: calendar,
+            quotaResetsAt: now.addingTimeInterval(30)
+        )
+        XCTAssertFalse(decision.refreshQuota)
+    }
+
+    func testResetSamplingOnlyAcceleratesDuringLastTenMinutes() throws {
+        let now = try date("2026-10-22T12:00:00Z")
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        for (seconds, expected) in [(601.0, false), (600.0, true), (1.0, true), (-1.0, false)] {
+            let decision = RefreshPolicy().decision(
+                now: now, reason: .scheduled, lastQuotaRefresh: now.addingTimeInterval(-60),
+                lastOfficialRefresh: now, consecutiveFailures: 0, calendar: calendar,
+                quotaResetsAt: now.addingTimeInterval(seconds)
+            )
+            XCTAssertEqual(decision.refreshQuota, expected)
+        }
+    }
+
     func testPopoverRefreshesMinuteOldQuotaButNotFreshOfficialUsage() {
         let now = Date(timeIntervalSince1970: 10_000)
         let decision = RefreshPolicy().decision(

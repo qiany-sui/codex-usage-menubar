@@ -614,6 +614,94 @@ struct ServiceFixture {
 final class UsageServiceTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_788_148_800)
 
+    func testExitCapturePersistsQuotaWithoutIndexingOrFetchingDailyUsage() async throws {
+        let fixture = try await ServiceFixture.make()
+        _ = try await fixture.service.refresh(reason: .startup, now: now)
+        await fixture.accountClient.setLimits(RateLimitsResponse(
+            rateLimits: RateLimitBucket(
+                limitId: "codex", limitName: nil,
+                primary: RateLimitWindow(usedPercent: 42, windowDurationMins: 10_080,
+                                         resetsAt: 1_788_753_600), secondary: nil
+            ), rateLimitsByLimitId: nil
+        ))
+        let before = await fixture.accountClient.callCounts()
+        let exitTime = now.addingTimeInterval(30)
+
+        try await fixture.service.captureQuotaBeforeExit(now: exitTime)
+
+        let quota = try await fixture.store.latestQuota()
+        XCTAssertEqual(quota?.usedPercent, 42)
+        XCTAssertEqual(quota?.fetchedAt, exitTime)
+        let after = await fixture.accountClient.callCounts()
+        XCTAssertEqual(after.limits, before.limits + 1)
+        XCTAssertEqual(after.usage, before.usage)
+        XCTAssertEqual(after.initialize, before.initialize)
+        try await fixture.store.close()
+    }
+
+    func testExitCaptureDoesNotStartAnUninitializedClient() async throws {
+        let fixture = try await ServiceFixture.make()
+
+        try await fixture.service.captureQuotaBeforeExit(now: now)
+
+        let calls = await fixture.accountClient.callCounts()
+        XCTAssertEqual(calls.initialize, 0)
+        XCTAssertEqual(calls.limits, 0)
+        try await fixture.store.close()
+    }
+
+    func testExitCaptureFailureKeepsPreviousQuota() async throws {
+        let fixture = try await ServiceFixture.make()
+        _ = try await fixture.service.refresh(reason: .startup, now: now)
+        await fixture.accountClient.setRateLimitsError(RPCErrorPayload(code: -1, message: "unavailable", data: nil))
+
+        do {
+            try await fixture.service.captureQuotaBeforeExit(now: now.addingTimeInterval(30))
+            XCTFail("额度读取失败应交由退出流程处理")
+        } catch is RPCErrorPayload {}
+
+        let quota = try await fixture.store.latestQuota()
+        XCTAssertEqual(quota?.fetchedAt, now)
+        XCTAssertEqual(quota?.usedPercent, 25)
+        try await fixture.store.close()
+    }
+
+    func testScheduledRefreshCapturesMinuteOldQuotaAroundLocalMidnight() async throws {
+        for timestamp in ["2026-08-31T23:51:00Z", "2026-09-01T00:01:00Z"] {
+            let fixture = try await ServiceFixture.make()
+            let start = try date(timestamp)
+            _ = try await fixture.service.refresh(reason: .startup, now: start)
+
+            _ = try await fixture.service.refresh(reason: .scheduled, now: start.addingTimeInterval(60))
+
+            let quota = try await fixture.store.latestQuota()
+            XCTAssertEqual(quota?.fetchedAt, start.addingTimeInterval(60))
+            let calls = await fixture.accountClient.callCounts()
+            XCTAssertEqual(calls.usage, 1)
+            try await fixture.store.close()
+        }
+    }
+
+    func testScheduledRefreshCapturesMinuteOldQuotaBeforeKnownReset() async throws {
+        let fixture = try await ServiceFixture.make()
+        let reset = now.addingTimeInterval(9 * 60)
+        await fixture.accountClient.setLimits(RateLimitsResponse(
+            rateLimits: RateLimitBucket(
+                limitId: "codex", limitName: nil,
+                primary: RateLimitWindow(usedPercent: 99, windowDurationMins: 10_080,
+                                         resetsAt: Int64(reset.timeIntervalSince1970)),
+                secondary: nil
+            ), rateLimitsByLimitId: nil
+        ))
+        _ = try await fixture.service.refresh(reason: .startup, now: now)
+
+        _ = try await fixture.service.refresh(reason: .scheduled, now: now.addingTimeInterval(60))
+
+        let quota = try await fixture.store.latestQuota()
+        XCTAssertEqual(quota?.fetchedAt, now.addingTimeInterval(60))
+        try await fixture.store.close()
+    }
+
     func testRefreshStartsBothRemoteReadsBeforeEitherCompletes() async throws {
         let limitsStarted = expectation(description: "quota read started")
         let usageStarted = expectation(description: "usage read started")
