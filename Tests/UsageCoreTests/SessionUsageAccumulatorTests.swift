@@ -2,6 +2,52 @@ import XCTest
 @testable import UsageCore
 
 final class SessionUsageAccumulatorTests: XCTestCase {
+    func testUnchangedTotalDoesNotRepeatLastUsageButLaterGrowthStillCounts() throws {
+        let last = TokenBreakdown(inputTokens: 100, cachedInputTokens: 40, outputTokens: 20)
+        let total = TokenBreakdown(inputTokens: 1_000, cachedInputTokens: 400, outputTokens: 200)
+        var accumulator = SessionUsageAccumulator()
+        let records = [total, total, total + last].enumerated().map { index, value in
+            SessionTokenRecord(
+                occurredAt: Date(timeIntervalSince1970: 1_788_753_600 + Double(index)),
+                lastUsage: last, totalUsage: value, schemaVariant: "last+total"
+            )
+        }
+
+        let events = try records.map { try accumulator.ingest($0) }
+
+        XCTAssertEqual(events[0]?.usage.totalTokens, 120)
+        XCTAssertNil(events[1])
+        XCTAssertEqual(events[2]?.usage.totalTokens, 120)
+        XCTAssertEqual(accumulator.state.previousTotal, total + last)
+    }
+
+    func testEqualLastUsageWithoutTotalRemainsCounted() throws {
+        var accumulator = SessionUsageAccumulator()
+        let events = try (0..<2).compactMap { index in
+            try accumulator.ingest(SessionTokenRecord(
+                occurredAt: Date(timeIntervalSince1970: 1_788_753_600 + Double(index)),
+                lastUsage: TokenBreakdown(inputTokens: 100, cachedInputTokens: 40, outputTokens: 20),
+                totalUsage: nil, schemaVariant: "last"
+            ))
+        }
+
+        XCTAssertEqual(events.map(\.usage.totalTokens), [120, 120])
+    }
+
+    func testCounterRollbackWithLastUsageStillStartsNewSegment() throws {
+        var accumulator = SessionUsageAccumulator(state: SessionCounterState(
+            previousTotal: TokenBreakdown(inputTokens: 1_000, cachedInputTokens: 400, outputTokens: 200)
+        ))
+        let event = try accumulator.ingest(SessionTokenRecord(
+            occurredAt: Date(timeIntervalSince1970: 1_788_753_600),
+            lastUsage: TokenBreakdown(inputTokens: 100, cachedInputTokens: 40, outputTokens: 20),
+            totalUsage: TokenBreakdown(inputTokens: 100, cachedInputTokens: 40, outputTokens: 20),
+            schemaVariant: "last+total"
+        ))
+
+        XCTAssertEqual(event?.usage.totalTokens, 120)
+    }
+
     func testUsesNonNegativeTotalDeltasAndStartsNewSegmentAfterReset() throws {
         let records = try fixtureLines(named: "session-total-usage")
             .compactMap { try SessionLineParser().parse(line: $0) }

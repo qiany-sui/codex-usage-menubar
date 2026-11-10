@@ -13,6 +13,10 @@ public struct SessionUsageAccumulator: Sendable {
     public mutating func ingest(
         _ record: SessionTokenRecord
     ) throws -> SessionTokenEvent? {
+        // 额度通知可能复用上一轮用量；累计值未增长时不能再次累加 last。
+        if let totalUsage = record.totalUsage, totalUsage == state.previousTotal {
+            return nil
+        }
         let totalDelta: TokenBreakdown?
         if let totalUsage = record.totalUsage {
             totalDelta = try delta(

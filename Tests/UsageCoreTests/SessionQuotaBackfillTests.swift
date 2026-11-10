@@ -4,6 +4,46 @@ import XCTest
 @testable import UsageCore
 
 final class SessionQuotaBackfillTests: XCTestCase {
+    func testRepeatedTokenAfterRestartStillBackfillsQuotaAndAdvancesCursor() async throws {
+        let root = try temporaryCodexHome()
+        let databaseURL = try temporaryDatabaseURL()
+        let lines = try fixtureLines(named: "session-repeated-token-count")
+            .map { String(decoding: $0, as: UTF8.self) }
+        let firstStore = try SQLiteUsageStore(databaseURL: databaseURL)
+        try await firstStore.migrate()
+        try await firstStore.save(quota: quota(36, "2026-10-22T08:59:00+08:00"))
+        try await firstStore.save(quota: quota(40, "2026-10-22T09:03:00+08:00"))
+        try write([lines[0]], to: root)
+        _ = try await SessionUsageIndexer(store: firstStore).index(
+            codexHome: root, modifiedSince: .distantPast, calendar: calendar
+        )
+        try await firstStore.close()
+
+        let store = try SQLiteUsageStore(databaseURL: databaseURL)
+        try await store.migrate()
+        try write(Array(lines.prefix(2)), to: root)
+        let indexer = SessionUsageIndexer(store: store)
+        let repeated = try await indexer.index(
+            codexHome: root, modifiedSince: .distantPast, calendar: calendar
+        )
+        let session = root.appendingPathComponent("sessions/usage.jsonl").standardizedFileURL
+        let pathHash = Data(SHA256.hash(data: Data(session.path.utf8)))
+        let cursor = try await store.cursor(for: pathHash)
+        let history = try await store.quotaHistory(from: .distantPast, to: .distantFuture, limitID: "codex")
+        XCTAssertEqual(repeated.insertedEventCount, 0)
+        XCTAssertEqual(cursor?.committedOffset, Int64(try Data(contentsOf: session).count))
+        XCTAssertEqual(history.map(\.usedPercent), [36, 37, 38, 40])
+
+        try write(lines, to: root)
+        let next = try await indexer.index(
+            codexHome: root, modifiedSince: .distantPast, calendar: calendar
+        )
+        let events = try await store.events(from: .distantPast, to: .distantFuture)
+        XCTAssertEqual(next.insertedEventCount, 1)
+        XCTAssertEqual(events.map(\.usage.totalTokens), [120, 120])
+        try await store.close()
+    }
+
     func testInterleavedResetReadingsPreserveCompletedCycleClosingQuota() async throws {
         let root = try temporaryCodexHome()
         let store = try SQLiteUsageStore(databaseURL: try temporaryDatabaseURL())
