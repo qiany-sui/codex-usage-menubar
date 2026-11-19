@@ -7,6 +7,33 @@ import XCTest
 final class UsagePresentationTests: XCTestCase {
     private let timeZone = TimeZone(identifier: "Asia/Shanghai")!
 
+    func testOverviewAndTrendKeepModelUsageAndCalibratedDayTotal() throws {
+        let now = try fixedDate("2026-09-01T08:00:00Z")
+        let model = ModelTokenUsage(
+            model: "gpt-6.2-sol",
+            usage: TokenBreakdown(inputTokens: 100, cachedInputTokens: 40, outputTokens: 20)
+        )
+        let today = UsageDay(
+            day: LocalDay(year: 2026, month: 9, day: 1), localUsage: model.usage,
+            officialTokens: nil, displayedTokens: 120, status: .localLive, modelUsage: [model]
+        )
+        let yesterday = UsageDay(
+            day: LocalDay(year: 2026, month: 8, day: 31), localUsage: model.usage,
+            officialTokens: 200, displayedTokens: 200, status: .calibrated, modelUsage: [model]
+        )
+        let snapshot = UsageSnapshot(
+            quota: nil, today: today, currentCycle: nil, recentDays: [yesterday, today],
+            cycleHistory: [], lastUpdatedAt: now, status: .localLive
+        )
+        let overview = OverviewPresentation(snapshot: snapshot, now: now, timeZone: timeZone)
+        let historical = try XCTUnwrap(TrendPresentation(snapshot: snapshot).days.first)
+
+        XCTAssertEqual(overview.modelUsage, [model])
+        XCTAssertEqual(historical.modelUsage, [model])
+        XCTAssertEqual(historical.tokens, 200)
+        XCTAssertEqual(historical.localTokens, 120)
+    }
+
     func testStaleMenuBarPreservesQuotaAndExplainsItsTimestamp() throws {
         let presentation = MenuBarPresentation(
             remainingPercent: 62, isFatal: false, isStale: true,

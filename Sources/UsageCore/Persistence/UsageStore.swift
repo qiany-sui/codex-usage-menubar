@@ -5,17 +5,20 @@ public struct StoredUsageEvent: Codable, Equatable, Sendable {
     public let occurredAt: Date
     public let localDay: LocalDay
     public let usage: TokenBreakdown
+    public let model: String?
 
     public init(
         signature: Data,
         occurredAt: Date,
         localDay: LocalDay,
-        usage: TokenBreakdown
+        usage: TokenBreakdown,
+        model: String? = nil
     ) {
         self.signature = signature
         self.occurredAt = occurredAt
         self.localDay = localDay
         self.usage = usage
+        self.model = model
     }
 }
 
@@ -25,19 +28,22 @@ public struct FileCursor: Codable, Equatable, Sendable {
     public let inode: Int64
     public let committedOffset: Int64
     public let counterState: SessionCounterState
+    public let model: String?
 
     public init(
         pathHash: Data,
         deviceID: Int64,
         inode: Int64,
         committedOffset: Int64,
-        counterState: SessionCounterState
+        counterState: SessionCounterState,
+        model: String? = nil
     ) {
         self.pathHash = pathHash
         self.deviceID = deviceID
         self.inode = inode
         self.committedOffset = committedOffset
         self.counterState = counterState
+        self.model = model
     }
 }
 

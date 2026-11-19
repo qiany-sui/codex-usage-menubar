@@ -176,6 +176,11 @@ final class SQLiteStatement {
         try check(sqlite3_bind_null(try pointer(), index), suffix: "bind null")
     }
 
+    func bind(_ value: String?, at index: Int32) throws {
+        if let value { try bind(value, at: index) }
+        else { try bindNull(at: index) }
+    }
+
     func step() throws -> SQLiteStepResult {
         let result = sqlite3_step(try pointer())
         switch result {
@@ -235,6 +240,11 @@ final class SQLiteStatement {
             throw corruption(suffix: "read text")
         }
         return value
+    }
+
+    func optionalString(at column: Int32) throws -> String? {
+        guard sqlite3_column_type(try pointer(), column) != SQLITE_NULL else { return nil }
+        return try string(at: column)
     }
 
     func data(at column: Int32) throws -> Data {

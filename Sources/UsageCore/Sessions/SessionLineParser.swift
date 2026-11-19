@@ -6,6 +6,16 @@ public struct SessionLineParser: Sendable {
     public init() {}
 
     public func parse(line: Data) throws -> SessionTokenRecord? {
+        if case let .token(record) = try parseEntry(line: line) { return record }
+        return nil
+    }
+
+    enum Entry {
+        case token(SessionTokenRecord)
+        case model(String?)
+    }
+
+    func parseEntry(line: Data) throws -> Entry? {
         let tokenEvent: SessionTokenEnvelope
         do {
             tokenEvent = try JSONDecoder().decode(
@@ -15,8 +25,10 @@ public struct SessionLineParser: Sendable {
         } catch {
             throw SessionParseError.invalidTokenEvent
         }
-        guard tokenEvent.isTokenEvent else {
-            return nil
+        switch tokenEvent.kind {
+        case .other: return nil
+        case let .model(model): return .model(model)
+        case .token: break
         }
         guard let timestamp = tokenEvent.timestamp,
               let occurredAt = timestamps.parse(timestamp) else {
@@ -30,13 +42,13 @@ public struct SessionLineParser: Sendable {
             totalUsage: totalUsage
         )
 
-        return SessionTokenRecord(
+        return .token(SessionTokenRecord(
             occurredAt: occurredAt,
             lastUsage: lastUsage,
             totalUsage: totalUsage,
             schemaVariant: schemaVariant,
             quota: tokenEvent.payload?.rateLimits?.quota(at: occurredAt)
-        )
+        ))
     }
 
     private func tokenBreakdown(
@@ -84,7 +96,11 @@ private struct SessionRoutingEnvelope: Decodable {
 }
 
 private struct SessionTokenEnvelope: Decodable {
-    let isTokenEvent: Bool
+    enum Kind {
+        case other, token, model(String?)
+    }
+
+    let kind: Kind
     let timestamp: String?
     let payload: Payload?
 
@@ -94,16 +110,42 @@ private struct SessionTokenEnvelope: Decodable {
 
     init(from decoder: any Decoder) throws {
         let routing = try SessionRoutingEnvelope(from: decoder)
-        isTokenEvent = routing.type == "event_msg" && routing.payload?.type == "token_count"
-        guard isTokenEvent else {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        switch (routing.type, routing.payload?.type) {
+        case ("turn_context", _):
+            let context = try? container.decode(TurnContext.self, forKey: .payload)
+            kind = .model(context?.modelIdentifier)
+        case ("event_msg", "task_started"), ("event_msg", "task_complete"),
+             ("event_msg", "turn_started"), ("event_msg", "turn_completed"),
+             ("event_msg", "turn_aborted"):
+            kind = .model(nil)
+        case ("event_msg", "token_count"):
+            kind = .token
+        default:
+            kind = .other
+        }
+        guard case .token = kind else {
             timestamp = nil
             payload = nil
             return
         }
         // 共用一次 JSON 解码，仍先分流，避免解析无关消息的正文或 token 字段。
-        let container = try decoder.container(keyedBy: CodingKeys.self)
         timestamp = try container.decodeIfPresent(String.self, forKey: .timestamp)
         payload = try container.decodeIfPresent(Payload.self, forKey: .payload)
+    }
+
+    private struct TurnContext: Decodable {
+        private static let identifierCharacters = CharacterSet(
+            charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:/-"
+        )
+        let model: String?
+
+        var modelIdentifier: String? {
+            guard let model, (1...128).contains(model.utf8.count),
+                  model.unicodeScalars.allSatisfy(Self.identifierCharacters.contains)
+            else { return nil }
+            return model
+        }
     }
 
     struct Payload: Decodable {

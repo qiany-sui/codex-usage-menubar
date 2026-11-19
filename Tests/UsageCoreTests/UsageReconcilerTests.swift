@@ -2,6 +2,40 @@ import XCTest
 @testable import UsageCore
 
 final class UsageReconcilerTests: XCTestCase {
+    func testModelUsageGroupsLocalEventsWithoutAllocatingOfficialTokensToModels() throws {
+        let now = try date("2026-08-31T12:00:00+08:00")
+        let yesterday = LocalDay(year: 2026, month: 8, day: 30)
+        let occurredAt = try date("2026-08-30T10:00:00+08:00")
+        let today = LocalDay(year: 2026, month: 8, day: 31)
+        let events = [
+            StoredUsageEvent(signature: Data([1]), occurredAt: occurredAt, localDay: yesterday,
+                             usage: .init(inputTokens: 100, cachedInputTokens: 30, outputTokens: 20), model: "sol"),
+            StoredUsageEvent(signature: Data([2]), occurredAt: occurredAt, localDay: yesterday,
+                             usage: .init(inputTokens: 40, cachedInputTokens: 10, outputTokens: 5), model: "sol"),
+            StoredUsageEvent(signature: Data([3]), occurredAt: occurredAt, localDay: yesterday,
+                             usage: .init(inputTokens: 20, cachedInputTokens: 0, outputTokens: 2), model: "astra"),
+            StoredUsageEvent(signature: Data([4]), occurredAt: occurredAt, localDay: yesterday,
+                             usage: .init(inputTokens: 20, cachedInputTokens: 1, outputTokens: 3)),
+            StoredUsageEvent(signature: Data([5]), occurredAt: now, localDay: today,
+                             usage: .init(inputTokens: 30, cachedInputTokens: 10, outputTokens: 4), model: "astra")
+        ]
+        let snapshot = UsageReconciler().snapshot(
+            now: now, calendar: shanghaiCalendar(), quota: nil, events: events,
+            officialDays: [OfficialUsageDay(day: yesterday, tokens: 500, fetchedAt: now)],
+            cycles: [], lastUpdatedAt: now
+        )
+        let historical = try XCTUnwrap(snapshot.recentDays.first { $0.day == yesterday })
+
+        XCTAssertEqual(historical.displayedTokens, 500)
+        XCTAssertEqual(historical.localUsage.totalTokens, 210)
+        XCTAssertEqual(historical.modelUsage?.map(\.model), ["sol", "astra", nil])
+        XCTAssertEqual(historical.modelUsage?.map(\.totalTokens), [165, 22, 23])
+        XCTAssertEqual(historical.modelUsage?.first?.usage,
+                       TokenBreakdown(inputTokens: 140, cachedInputTokens: 40, outputTokens: 25))
+        XCTAssertEqual(snapshot.today.modelUsage?.map(\.model), ["astra"])
+        XCTAssertEqual(snapshot.today.modelUsage?.map(\.totalTokens), [34])
+    }
+
     func testPartialBoundaryWithoutOfficialCoverageRemainsLocal() throws {
         let start = try date("2026-08-28T12:00:00+08:00")
         let end = try date("2026-09-04T12:00:00+08:00")

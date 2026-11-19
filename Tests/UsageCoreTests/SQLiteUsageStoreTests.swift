@@ -866,8 +866,8 @@ final class SQLiteUsageStoreTests: XCTestCase {
             let connection = try SQLiteConnection(databaseURL: databaseURL)
             try connection.execute(
                 """
-                INSERT INTO usage_events VALUES (x'01', 100, '2026-08-31', 1, 2, 0);
-                INSERT INTO file_cursors VALUES (x'02', 1, 2, -1, NULL, NULL, NULL);
+                INSERT INTO usage_events VALUES (x'01', 100, '2026-08-31', 1, 2, 0, NULL);
+                INSERT INTO file_cursors VALUES (x'02', 1, 2, -1, NULL, NULL, NULL, NULL);
                 INSERT INTO official_usage_days VALUES ('2026-08-31', 1, 1e999);
                 INSERT INTO quota_snapshots (fetched_at, limit_id, used_percent, window_duration_minutes, starts_at, resets_at)
                 VALUES (100, 'codex', 25, 10080, 1e999, 200);
@@ -1006,7 +1006,7 @@ final class SQLiteUsageStoreTests: XCTestCase {
             let connection = try SQLiteConnection(databaseURL: databaseURL)
             try connection.execute(
                 """
-                INSERT INTO usage_events VALUES (x'01', 100, '2026-02-31', 1, 0, 0);
+                INSERT INTO usage_events VALUES (x'01', 100, '2026-02-31', 1, 0, 0, NULL);
                 INSERT INTO official_usage_days VALUES ('0000-01-01', 1, 100);
                 """,
                 operation: "test fixture"

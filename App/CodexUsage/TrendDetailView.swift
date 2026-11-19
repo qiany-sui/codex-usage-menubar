@@ -5,6 +5,7 @@ struct TrendDetailView: View {
     @Environment(\.usageColors) private var colors
     @State private var selectedDay: LocalDay?
     @State private var detailDay: LocalDay?
+    @State private var expandedModel: String?
     @State private var listContentWidth: CGFloat?
     @State private var showsQuotaExplanation = false
 
@@ -178,6 +179,7 @@ struct TrendDetailView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     Button {
                         selectedDay = day.day
+                        expandedModel = nil
                         detailDay = day.day
                     } label: {
                         HStack(spacing: columnSpacing) {
@@ -228,7 +230,7 @@ struct TrendDetailView: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityAddTraits(day.day == activeDay ? .isSelected : [])
-                    .accessibilityHint("打开当日用量、校准状态和重置详情")
+                    .accessibilityHint("打开当日用量、模型明细和重置详情")
                     .popover(isPresented: Binding(
                         get: { detailDay == day.day },
                         set: { if !$0, detailDay == day.day { detailDay = nil } }
@@ -266,7 +268,7 @@ struct TrendDetailView: View {
                         .padding(.trailing, 12)
                 }
             }
-            .frame(maxHeight: 280)
+            .frame(maxHeight: 360)
             .fixedSize(horizontal: false, vertical: true)
         }
         .foregroundStyle(colors.primaryText)
@@ -299,6 +301,20 @@ struct TrendDetailView: View {
                 .lineSpacing(3)
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
+            if !day.modelUsage.isEmpty {
+                Rectangle().fill(colors.border.opacity(0.6)).frame(height: 1)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("按模型")
+                        .font(.system(size: 11, weight: .semibold))
+                        .accessibilityAddTraits(.isHeader)
+                    ModelUsageRows(rows: day.modelUsage, expandedModel: $expandedModel)
+                }
+                .foregroundStyle(colors.primaryText)
+                Text("本机记录合计 \(day.localTokens.formatted())")
+                    .monospacedDigit()
+            } else if day.tokens > 0 {
+                Text("暂无本机模型记录")
+            }
         }
         .font(.system(size: 11))
         .foregroundStyle(colors.secondaryText)

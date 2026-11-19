@@ -59,6 +59,7 @@ struct OverviewPresentation: Equatable {
     let inputTokens: String
     let cachedInputTokens: String
     let outputTokens: String
+    let modelUsage: [ModelTokenUsage]
     let additiveSegments: [UsageSegment]
     let currentCycleTokens: String
     let currentCycleStatus: String
@@ -91,10 +92,11 @@ struct OverviewPresentation: Equatable {
         todayQuota = DayQuotaPresentation(day: snapshot.today, timeZone: timeZone)
         currentCycleQuota = UsageFormatters.cycleQuotaUsage(snapshot.currentCycle?.quotaUsedPercent)
         currentCycleQuotaPercent = UsageFormatters.quotaConsumedPercent(snapshot.currentCycle?.quotaUsedPercent)
-        todayTotal = UsageFormatters.tokens(today.totalTokens)
+        todayTotal = UsageFormatters.tokens(snapshot.today.localTokens)
         inputTokens = UsageFormatters.tokens(today.inputTokens)
         cachedInputTokens = UsageFormatters.tokens(today.cachedInputTokens)
         outputTokens = UsageFormatters.tokens(today.outputTokens)
+        modelUsage = snapshot.today.modelUsage ?? []
         additiveSegments = [
             UsageSegment(
                 id: "input",
@@ -230,6 +232,8 @@ struct TrendDayPresentation: Equatable, Identifiable {
     let day: LocalDay
     let label: String
     let tokens: Int64
+    let localTokens: Int64
+    let modelUsage: [ModelTokenUsage]
     let formattedTokens: String
     let status: UsageCalibrationStatus
     let statusLabel: String
@@ -255,6 +259,8 @@ struct TrendPresentation: Equatable {
                 day: day.day,
                 label: UsageFormatters.day(day.day),
                 tokens: day.displayedTokens,
+                localTokens: day.localTokens,
+                modelUsage: day.modelUsage ?? [],
                 formattedTokens: UsageFormatters.tokens(day.displayedTokens),
                 status: day.status,
                 statusLabel: UsageFormatters.calibration(day.status),

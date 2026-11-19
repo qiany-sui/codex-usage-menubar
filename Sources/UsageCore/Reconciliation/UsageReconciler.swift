@@ -15,7 +15,7 @@ public struct UsageReconciler: Sendable {
     ) -> UsageSnapshot {
         let todayStart = calendar.startOfDay(for: now)
         let todayDay = localDay(for: todayStart, calendar: calendar)
-        let localUsageByDay = aggregateEventsByStoredDay(events)
+        let usageByDayAndModel = aggregateEventsByStoredDayAndModel(events)
         let officialByDay = latestOfficialDays(officialDays)
         let officialRange = officialByDay.keys.min().flatMap { firstDay in
             officialByDay.keys.max().map { firstDay...$0 }
@@ -30,7 +30,14 @@ public struct UsageReconciler: Sendable {
                 return nil
             }
             let day = localDay(for: dayDate, calendar: calendar)
-            let localUsage = localUsageByDay[day] ?? .zero
+            let byModel = usageByDayAndModel[day] ?? [:]
+            let localUsage = byModel.values.reduce(.zero, addingClamped)
+            let modelUsage = byModel.map { ModelTokenUsage(model: $0.key, usage: $0.value) }
+                .sorted { lhs, rhs in
+                    if (lhs.model == nil) != (rhs.model == nil) { return lhs.model != nil }
+                    if lhs.totalTokens != rhs.totalTokens { return lhs.totalTokens > rhs.totalTokens }
+                    return (lhs.model ?? "") < (rhs.model ?? "")
+                }
             let official = officialByDay[day]
             let isOfficiallyCovered = official != nil
                 || officialRange?.contains(day) == true
@@ -41,7 +48,8 @@ public struct UsageReconciler: Sendable {
                     localUsage: localUsage,
                     officialTokens: officialTokens,
                     displayedTokens: officialTokens,
-                    status: .calibrated
+                    status: .calibrated,
+                    modelUsage: modelUsage.isEmpty ? nil : modelUsage
                 )
             }
             return UsageDay(
@@ -49,16 +57,16 @@ public struct UsageReconciler: Sendable {
                 localUsage: localUsage,
                 officialTokens: official?.tokens,
                 displayedTokens: totalTokensClamped(localUsage),
-                status: .localLive
+                status: .localLive,
+                modelUsage: modelUsage.isEmpty ? nil : modelUsage
             )
         }
+        let todayUsage = usageByDayAndModel[todayDay]?.values.reduce(.zero, addingClamped) ?? .zero
         let today = recentDays.last ?? UsageDay(
             day: todayDay,
-            localUsage: localUsageByDay[todayDay] ?? .zero,
+            localUsage: todayUsage,
             officialTokens: officialByDay[todayDay]?.tokens,
-            displayedTokens: totalTokensClamped(
-                localUsageByDay[todayDay] ?? .zero
-            ),
+            displayedTokens: totalTokensClamped(todayUsage),
             status: .localLive
         )
 
@@ -100,7 +108,8 @@ public struct UsageReconciler: Sendable {
                 status: day.status,
                 quotaConsumedPercent: consumption.percent,
                 quotaSegments: consumption.segments,
-                recordedQuotaConsumedPercent: consumption.recordedPercent
+                recordedQuotaConsumedPercent: consumption.recordedPercent,
+                modelUsage: day.modelUsage
             )
         }
 
@@ -342,12 +351,14 @@ public struct UsageReconciler: Sendable {
         }
     }
 
-    private func aggregateEventsByStoredDay(
+    private func aggregateEventsByStoredDayAndModel(
         _ events: [StoredUsageEvent]
-    ) -> [LocalDay: TokenBreakdown] {
+    ) -> [LocalDay: [String?: TokenBreakdown]] {
         events.reduce(into: [:]) { result, event in
-            result[event.localDay] = addingClamped(
-                result[event.localDay] ?? .zero,
+            guard event.usage != .zero else { return }
+            let previous = result[event.localDay]?[event.model] ?? .zero
+            result[event.localDay, default: [:]][event.model] = addingClamped(
+                previous,
                 event.usage
             )
         }

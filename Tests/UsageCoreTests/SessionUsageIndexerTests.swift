@@ -4,6 +4,121 @@ import XCTest
 @testable import UsageCore
 
 final class SessionUsageIndexerTests: XCTestCase {
+    func testModelFollowsTurnChangesAndSurvivesReopeningAnIncrementalCursor() async throws {
+        let root = try temporaryCodexHome()
+        let session = root.appendingPathComponent("sessions/models.jsonl")
+        let databaseURL = try temporaryDatabaseURL()
+        let calendar = Calendar(identifier: .gregorian)
+        let store = try SQLiteUsageStore(databaseURL: databaseURL)
+        try await store.migrate()
+        let initial = [
+            #"{"type":"turn_context","payload":{"model":"gpt-6.2-sol"}}"#,
+            totalTokenLine(timestamp: "2026-08-31T01:00:00Z", input: 100, cached: 40, output: 20),
+            #"{"type":"event_msg","payload":{"type":"task_complete"}}"#,
+            #"{"type":"event_msg","payload":{"type":"task_started"}}"#,
+            totalTokenLine(timestamp: "2026-08-31T01:01:00Z", input: 130, cached: 50, output: 22),
+            #"{"type":"turn_context","payload":{"model":"gpt-6.2-astra"}}"#,
+            ""
+        ].joined(separator: "\n")
+        try Data(initial.utf8).write(to: session)
+        _ = try await SessionUsageIndexer(store: store).index(
+            codexHome: root, modifiedSince: .distantPast, calendar: calendar
+        )
+        try await store.close()
+
+        let appended = totalTokenLine(
+            timestamp: "2026-08-31T01:02:00Z", input: 200, cached: 80, output: 30
+        ) + "\n"
+        let handle = try FileHandle(forWritingTo: session)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(appended.utf8))
+        try handle.close()
+        let reopened = try SQLiteUsageStore(databaseURL: databaseURL)
+        try await reopened.migrate()
+        let result = try await SessionUsageIndexer(store: reopened).index(
+            codexHome: root, modifiedSince: .distantPast, calendar: calendar
+        )
+        let events = try await reopened.events(from: .distantPast, to: .distantFuture)
+
+        XCTAssertEqual(result.insertedEventCount, 1)
+        XCTAssertEqual(events.map(\.model), ["gpt-6.2-sol", nil, "gpt-6.2-astra"])
+        XCTAssertEqual(events.map(\.usage.totalTokens), [120, 32, 78])
+    }
+
+    func testModelMigrationBackfillsExistingEventsWithoutCountingReplayedTokensTwice() async throws {
+        let root = try temporaryCodexHome()
+        let session = root.appendingPathComponent("archived_sessions/models.jsonl")
+        let databaseURL = try temporaryDatabaseURL()
+        let calendar = Calendar(identifier: .gregorian)
+        let line = totalTokenLine(
+            timestamp: "2026-08-31T01:00:00Z", input: 100, cached: 40, output: 20
+        )
+        let contents = #"{"type":"turn_context","payload":{"model":"gpt-6.2-sol"}}"# + "\n" + line + "\n"
+        try Data(contents.utf8).write(to: session)
+        let legacy = try SQLiteConnection(databaseURL: databaseURL)
+        try legacy.execute(
+            """
+            PRAGMA user_version = 2;
+            CREATE TABLE usage_events (
+                signature BLOB PRIMARY KEY NOT NULL, occurred_at REAL NOT NULL, local_day TEXT NOT NULL,
+                input_tokens INTEGER NOT NULL, cached_input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL
+            );
+            CREATE TABLE file_cursors (
+                path_hash BLOB PRIMARY KEY NOT NULL, device_id INTEGER NOT NULL, inode INTEGER NOT NULL,
+                committed_offset INTEGER NOT NULL, previous_input_tokens INTEGER,
+                previous_cached_input_tokens INTEGER, previous_output_tokens INTEGER
+            );
+            CREATE TABLE quota_snapshots (
+                fetched_at REAL PRIMARY KEY NOT NULL, limit_id TEXT NOT NULL, used_percent REAL NOT NULL,
+                window_duration_minutes INTEGER NOT NULL, starts_at REAL NOT NULL, resets_at REAL NOT NULL,
+                is_from_session INTEGER NOT NULL DEFAULT 0
+            );
+            """,
+            operation: "create version 2 fixture"
+        )
+        var accumulator = SessionUsageAccumulator()
+        let record = try XCTUnwrap(SessionLineParser().parse(line: Data(line.utf8)))
+        let event = try XCTUnwrap(accumulator.ingest(record))
+        let insert = try legacy.prepare(
+            "INSERT INTO usage_events VALUES (?, ?, '2026-08-31', 100, 40, 20);",
+            operation: "seed legacy usage event"
+        )
+        try insert.bind(event.signature, at: 1)
+        try insert.bind(event.occurredAt.timeIntervalSince1970, at: 2)
+        XCTAssertEqual(try insert.step(), .done)
+        let values = try FileManager.default.attributesOfItem(atPath: session.path)
+        let device = try XCTUnwrap(values[.systemNumber] as? NSNumber).int64Value
+        let inode = try XCTUnwrap(values[.systemFileNumber] as? NSNumber).int64Value
+        let pathHash = Data(SHA256.hash(data: Data(session.standardizedFileURL.path.utf8)))
+        let cursor = try legacy.prepare(
+            "INSERT INTO file_cursors VALUES (?, ?, ?, ?, 100, 40, 20);",
+            operation: "seed legacy cursor"
+        )
+        try cursor.bind(pathHash, at: 1)
+        try cursor.bind(device, at: 2)
+        try cursor.bind(inode, at: 3)
+        try cursor.bind(Int64(contents.utf8.count), at: 4)
+        XCTAssertEqual(try cursor.step(), .done)
+
+        let store = try SQLiteUsageStore(databaseURL: databaseURL)
+        try await store.migrate()
+        let result = try await SessionUsageIndexer(store: store).index(
+            codexHome: root, modifiedSince: .distantPast, calendar: calendar
+        )
+        try await store.migrate()
+        let migratedCursor = try await store.cursor(for: pathHash)
+        XCTAssertEqual(migratedCursor?.committedOffset, Int64(contents.utf8.count))
+        let replay = try await SessionUsageIndexer(store: store).index(
+            codexHome: root, modifiedSince: .distantPast, calendar: calendar
+        )
+        let events = try await store.events(from: .distantPast, to: .distantFuture)
+
+        XCTAssertEqual(result.insertedEventCount, 0)
+        XCTAssertEqual(replay.insertedEventCount, 0)
+        XCTAssertEqual(events.map(\.model), ["gpt-6.2-sol"])
+        XCTAssertEqual(events.map(\.usage.totalTokens), [120])
+    }
+
     func testResolverPrefersInitializedAbsoluteDirectoryThenEnvironment() throws {
         let root = try temporaryDirectory()
         let initialized = root.appendingPathComponent("initialized")

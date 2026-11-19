@@ -110,10 +110,32 @@ public actor SQLiteUsageStore: UsageStore {
                     operation: "enable session quota backfill"
                 )
             }
-            try connection.execute(
-                "PRAGMA user_version = 2;",
-                operation: "set schema version"
-            )
+            let version = try connection.prepare("PRAGMA user_version;", operation: "read schema version")
+            guard try version.step() == .row else { throw corruption(operation: "read schema version") }
+            if try version.int64(at: 0) < 3 {
+                let modelColumn = try connection.prepare(
+                    "SELECT name FROM pragma_table_info('usage_events') WHERE name = 'model';",
+                    operation: "read model schema"
+                )
+                if try modelColumn.step() == .done {
+                    try connection.execute(
+                        """
+                        ALTER TABLE usage_events ADD COLUMN model TEXT;
+                        ALTER TABLE file_cursors ADD COLUMN model TEXT;
+                        """,
+                        operation: "add model columns"
+                    )
+                }
+                // 重扫保留的日志以补齐旧事件，同时保留原来的去重签名。
+                try connection.execute(
+                    """
+                    UPDATE file_cursors SET committed_offset = 0, previous_input_tokens = NULL,
+                      previous_cached_input_tokens = NULL, previous_output_tokens = NULL, model = NULL;
+                    PRAGMA user_version = 3;
+                    """,
+                    operation: "enable model backfill"
+                )
+            }
         }
     }
 
@@ -165,7 +187,7 @@ public actor SQLiteUsageStore: UsageStore {
         let statement = try connection.prepare(
             """
             SELECT signature, occurred_at, local_day, input_tokens,
-                   cached_input_tokens, output_tokens
+                   cached_input_tokens, output_tokens, model
             FROM usage_events
             WHERE occurred_at >= ? AND occurred_at < ?
             ORDER BY occurred_at ASC, signature ASC;
@@ -187,7 +209,8 @@ public actor SQLiteUsageStore: UsageStore {
                     inputTokens: try statement.int64(at: 3),
                     cachedInputTokens: try statement.int64(at: 4),
                     outputTokens: try statement.int64(at: 5)
-                )
+                ),
+                model: try statement.optionalString(at: 6)
             )
             guard isValidEvent(event) else {
                 throw corruption(operation: "read events")
@@ -202,7 +225,7 @@ public actor SQLiteUsageStore: UsageStore {
         let statement = try connection.prepare(
             """
             SELECT device_id, inode, committed_offset, previous_input_tokens,
-                   previous_cached_input_tokens, previous_output_tokens
+                   previous_cached_input_tokens, previous_output_tokens, model
             FROM file_cursors WHERE path_hash = ?;
             """,
             operation: "read cursor"
@@ -232,7 +255,8 @@ public actor SQLiteUsageStore: UsageStore {
             deviceID: try statement.int64(at: 0),
             inode: try statement.int64(at: 1),
             committedOffset: try statement.int64(at: 2),
-            counterState: SessionCounterState(previousTotal: previousTotal)
+            counterState: SessionCounterState(previousTotal: previousTotal),
+            model: try statement.optionalString(at: 6)
         )
         guard isValidCursor(cursor) else {
             throw corruption(operation: "read cursor")
@@ -254,10 +278,14 @@ public actor SQLiteUsageStore: UsageStore {
             """
             INSERT OR IGNORE INTO usage_events (
               signature, occurred_at, local_day, input_tokens,
-              cached_input_tokens, output_tokens
-            ) VALUES (?, ?, ?, ?, ?, ?);
+              cached_input_tokens, output_tokens, model
+            ) VALUES (?, ?, ?, ?, ?, ?, ?);
             """,
             operation: "insert event"
+        )
+        let backfill = try connection.prepare(
+            "UPDATE usage_events SET model = ? WHERE signature = ? AND model IS NULL;",
+            operation: "backfill event model"
         )
         var inserted = 0
         for event in events {
@@ -267,11 +295,19 @@ public actor SQLiteUsageStore: UsageStore {
             try statement.bind(event.usage.inputTokens, at: 4)
             try statement.bind(event.usage.cachedInputTokens, at: 5)
             try statement.bind(event.usage.outputTokens, at: 6)
+            try statement.bind(event.model, at: 7)
             guard try statement.step() == .done else {
                 throw corruption(operation: "insert event")
             }
-            inserted += try connection.changes()
+            let changes = try connection.changes()
+            inserted += changes
             try statement.reset()
+            if changes == 0, let model = event.model {
+                try backfill.bind(model, at: 1)
+                try backfill.bind(event.signature, at: 2)
+                guard try backfill.step() == .done else { throw corruption(operation: "backfill event model") }
+                try backfill.reset()
+            }
         }
         return inserted
     }
@@ -283,15 +319,16 @@ public actor SQLiteUsageStore: UsageStore {
             INSERT INTO file_cursors (
               path_hash, device_id, inode, committed_offset,
               previous_input_tokens, previous_cached_input_tokens,
-              previous_output_tokens
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+              previous_output_tokens, model
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(path_hash) DO UPDATE SET
               device_id = excluded.device_id,
               inode = excluded.inode,
               committed_offset = excluded.committed_offset,
               previous_input_tokens = excluded.previous_input_tokens,
               previous_cached_input_tokens = excluded.previous_cached_input_tokens,
-              previous_output_tokens = excluded.previous_output_tokens;
+              previous_output_tokens = excluded.previous_output_tokens,
+              model = excluded.model;
             """,
             operation: "save cursor"
         )
@@ -299,6 +336,7 @@ public actor SQLiteUsageStore: UsageStore {
         try statement.bind(cursor.deviceID, at: 2)
         try statement.bind(cursor.inode, at: 3)
         try statement.bind(cursor.committedOffset, at: 4)
+        try statement.bind(cursor.model, at: 8)
         if let total = cursor.counterState.previousTotal {
             try statement.bind(total.inputTokens, at: 5)
             try statement.bind(total.cachedInputTokens, at: 6)

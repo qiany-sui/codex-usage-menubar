@@ -94,6 +94,7 @@ struct UsageColors {
 struct UsagePopoverSurface: ViewModifier {
     let style: UsageStyle
     var isLowQuota = false
+    var height = UsageTheme.popoverSize.height
 
     private var colors: UsageColors { style.colors.withLowQuota(isLowQuota) }
 
@@ -101,7 +102,7 @@ struct UsagePopoverSurface: ViewModifier {
         content
             .frame(
                 width: UsageTheme.popoverSize.width,
-                height: UsageTheme.popoverSize.height
+                height: height
             )
             // 圆角和外沿交给系统窗口，避免自绘圆角露出宿主底色形成双层边框。
             .background {

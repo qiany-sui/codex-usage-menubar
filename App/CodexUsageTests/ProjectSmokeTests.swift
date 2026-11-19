@@ -175,6 +175,53 @@ final class ProjectSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testOverviewModelListStartsCollapsedInBothStyles() throws {
+        let base = try sampleSnapshot()
+
+        func contentHeight(modelCount: Int, style: UsageStyle, expanded: Bool = false) throws -> CGFloat {
+            let models = (0..<modelCount).map { index in
+                ModelTokenUsage(model: "model-\(index)", usage: .init(
+                    inputTokens: 100, cachedInputTokens: 40, outputTokens: 20
+                ))
+            }
+            let today = UsageDay(
+                day: base.today.day, localUsage: base.today.localUsage,
+                officialTokens: nil, displayedTokens: base.today.displayedTokens,
+                status: .localLive, modelUsage: models
+            )
+            let snapshot = UsageSnapshot(
+                quota: base.quota, today: today, currentCycle: base.currentCycle,
+                recentDays: [today], cycleHistory: [], lastUpdatedAt: base.lastUpdatedAt, status: .localLive
+            )
+            let presentation = OverviewPresentation(
+                snapshot: snapshot, now: base.lastUpdatedAt, timeZone: utcCalendar().timeZone
+            )
+            let view = NSHostingView(rootView:
+                OverviewView(
+                    presentation: presentation, style: .constant(style), isModelUsageExpanded: .constant(expanded)
+                )
+                    .modifier(UsagePopoverSurface(style: style, height: 570))
+            )
+            view.frame = NSRect(x: 0, y: 0, width: AppMetadata.popoverSize.width, height: 570)
+            view.layoutSubtreeIfNeeded()
+            let scroll = try XCTUnwrap(descendants(of: view).compactMap { $0 as? NSScrollView }.first)
+            let document = try XCTUnwrap(scroll.documentView)
+            return try XCTUnwrap(descendants(of: document).map {
+                $0.convert($0.bounds, to: document).maxY
+            }.max())
+        }
+
+        for style in UsageStyle.allCases {
+            let oneModel = try contentHeight(modelCount: 1, style: style)
+            let fourModels = try contentHeight(modelCount: 4, style: style)
+            XCTAssertGreaterThan(oneModel, 0)
+            XCTAssertEqual(oneModel, fourModels, accuracy: 1, "\(style.title) 收拢时的高度与模型数量无关")
+            let expanded = try contentHeight(modelCount: 4, style: style, expanded: true)
+            XCTAssertGreaterThan(expanded, fourModels + 80, "\(style.title) 展开后应显示四行模型")
+        }
+    }
+
+    @MainActor
     func testTrendShowsAllSevenCollapsedDaysWithoutVerticalScrolling() throws {
         let base = try sampleSnapshot(
             recentDayTotals: [230_000_000, 0, 392_000, 7_846_000, 23_000_000, 48_000_000, 94_653_000],

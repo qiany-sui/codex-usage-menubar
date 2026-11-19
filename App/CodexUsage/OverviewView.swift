@@ -3,6 +3,7 @@ import SwiftUI
 struct OverviewView: View {
     let presentation: OverviewPresentation
     @Binding var style: UsageStyle
+    @Binding var isModelUsageExpanded: Bool
     let isRefreshing: Bool
     let showsCodexHomeAction: Bool
     let codexHomeSelectionMessage: String?
@@ -14,10 +15,12 @@ struct OverviewView: View {
 
     @Environment(\.usageColors) private var colors
     @State private var contentHeight: CGFloat?
+    @State private var expandedModel: String?
 
     init(
         presentation: OverviewPresentation,
         style: Binding<UsageStyle> = .constant(.aurora),
+        isModelUsageExpanded: Binding<Bool> = .constant(false),
         isRefreshing: Bool = false,
         showsCodexHomeAction: Bool = false,
         codexHomeSelectionMessage: String? = nil,
@@ -29,6 +32,7 @@ struct OverviewView: View {
     ) {
         self.presentation = presentation
         _style = style
+        _isModelUsageExpanded = isModelUsageExpanded
         self.isRefreshing = isRefreshing
         self.showsCodexHomeAction = showsCodexHomeAction
         self.codexHomeSelectionMessage = codexHomeSelectionMessage
@@ -54,6 +58,13 @@ struct OverviewView: View {
                     quotaSection
                     if style == .aurora {
                         usageSection.padding(.top, 8)
+                        if !presentation.modelUsage.isEmpty {
+                            auroraCycleDetails
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 7)
+                                .modifier(UsageAccentCard(style: style))
+                                .padding(.top, 6)
+                        }
                     } else {
                         todaySection
                             .padding(.top, 7)
@@ -115,31 +126,68 @@ struct OverviewView: View {
                 tokenDetail("输出", value: presentation.outputTokens, showsDivider: true)
             }
             .frame(height: 38)
-            Rectangle().fill(colors.border).frame(height: 1)
-                .padding(.vertical, 5)
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text("当前周期 Token")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(colors.secondaryText)
-                    Spacer(minLength: 8)
-                    Text(presentation.currentCycleTokens)
-                        .font(.system(size: 17, weight: .semibold))
-                        .monospacedDigit()
-                }
-                HStack {
-                    Text(presentation.currentCycleStatus)
-                        .foregroundStyle(cycleStatusColor)
-                    Spacer(minLength: 8)
-                    cycleQuota
-                }
-                .font(.system(size: 11))
+            if presentation.modelUsage.isEmpty {
+                Rectangle().fill(colors.border).frame(height: 1)
+                    .padding(.vertical, 5)
+                auroraCycleDetails
+            } else {
+                modelUsageSection
             }
-            .lineLimit(1)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 7)
         .modifier(UsageAccentCard(style: style))
+    }
+
+    private var auroraCycleDetails: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("当前周期 Token")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(colors.secondaryText)
+                Spacer(minLength: 8)
+                Text(presentation.currentCycleTokens)
+                    .font(.system(size: 17, weight: .semibold))
+                    .monospacedDigit()
+            }
+            HStack {
+                Text(presentation.currentCycleStatus)
+                    .foregroundStyle(cycleStatusColor)
+                Spacer(minLength: 8)
+                cycleQuota
+            }
+            .font(.system(size: 11))
+        }
+        .lineLimit(1)
+    }
+
+    private var modelUsageSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Rectangle().fill(colors.border).frame(height: 1)
+            Button {
+                isModelUsageExpanded.toggle()
+                if !isModelUsageExpanded { expandedModel = nil }
+            } label: {
+                HStack {
+                    Text("按模型")
+                        .font(.system(size: 11, weight: .semibold))
+                    Spacer(minLength: 8)
+                    Image(systemName: isModelUsageExpanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(colors.secondaryText)
+                        .frame(width: 8)
+                        .accessibilityHidden(true)
+                }
+                .frame(minHeight: 24)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityValue(isModelUsageExpanded ? "已展开" : "已收拢")
+            if isModelUsageExpanded {
+                ModelUsageRows(rows: presentation.modelUsage, expandedModel: $expandedModel)
+            }
+        }
+        .padding(.top, 5)
     }
 
     private var header: some View {
@@ -399,6 +447,9 @@ struct OverviewView: View {
             }
             .frame(height: 34.6)
             .padding(.top, 8)
+            if !presentation.modelUsage.isEmpty {
+                modelUsageSection
+            }
         }
         .padding(.horizontal, 13)
         .padding(.top, 11)

@@ -137,6 +137,7 @@ public actor SessionUsageIndexer {
         }
 
         var accumulator = SessionUsageAccumulator(state: initialState)
+        var model = canResume ? existingCursor?.model : nil
         var events: [StoredUsageEvent] = []
         var quotas: [QuotaSnapshot] = []
         let completeData = unread.prefix(completeByteCount)
@@ -145,8 +146,14 @@ public actor SessionUsageIndexer {
             omittingEmptySubsequences: true
         ) {
             do {
-                guard let record = try parser.parse(line: Data(line)) else {
+                let record: SessionTokenRecord
+                switch try parser.parseEntry(line: Data(line)) {
+                case .none: continue
+                case let .model(nextModel):
+                    model = nextModel
                     continue
+                case let .token(token):
+                    record = token
                 }
                 // 额度通知可能没有 Token 增量，必须先保存，不能被累加器跳过。
                 if let quota = record.quota { quotas.append(quota) }
@@ -170,7 +177,8 @@ public actor SessionUsageIndexer {
                         signature: event.signature,
                         occurredAt: event.occurredAt,
                         localDay: LocalDay(year: year, month: month, day: day),
-                        usage: event.usage
+                        usage: event.usage,
+                        model: model
                     )
                 )
             } catch is SessionParseError {
@@ -184,7 +192,8 @@ public actor SessionUsageIndexer {
             deviceID: opened.snapshot.deviceID,
             inode: opened.snapshot.inode,
             committedOffset: committedOffset,
-            counterState: accumulator.state
+            counterState: accumulator.state,
+            model: model
         )
         guard try snapshot(of: opened.handle) == opened.snapshot else {
             return 0

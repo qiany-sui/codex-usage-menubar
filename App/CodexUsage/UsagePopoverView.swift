@@ -6,6 +6,7 @@ struct UsagePopoverView: View {
     @ObservedObject var viewModel: UsageViewModel
     @AppStorage(UsageStyle.storageKey) var style: UsageStyle = .aurora
     @State private var isRetrying = false
+    @State private var isModelUsageExpanded = false
 
     private let now: () -> Date
     private let timeZone: TimeZone
@@ -45,8 +46,19 @@ struct UsagePopoverView: View {
             }
             .modifier(UsagePopoverSurface(
                 style: style,
-                isLowQuota: (viewModel.snapshot?.quota?.remainingPercent ?? 100) <= 10
+                isLowQuota: (viewModel.snapshot?.quota?.remainingPercent ?? 100) <= 10,
+                height: popoverHeight
             ))
+    }
+
+    private var popoverHeight: CGFloat {
+        let baseHeight = UsageTheme.popoverSize.height
+        guard viewModel.page == .overview,
+              let models = viewModel.snapshot?.today.modelUsage, !models.isEmpty else {
+            return baseHeight
+        }
+        let rowsHeight = isModelUsageExpanded ? CGFloat(min(models.count, 4)) * 25 : 0
+        return baseHeight + 26 + rowsHeight
     }
 
     @ViewBuilder
@@ -86,6 +98,7 @@ struct UsagePopoverView: View {
                         timeZone: timeZone
                     ),
                     style: $style,
+                    isModelUsageExpanded: $isModelUsageExpanded,
                     isRefreshing: viewModel.isRefreshing,
                     showsCodexHomeAction: viewModel.needsCodexHomeSelection,
                     codexHomeSelectionMessage: viewModel.codexHomeSelectionMessage,
@@ -101,6 +114,7 @@ struct UsagePopoverView: View {
                         NSApplication.shared.terminate(nil)
                     }
                 )
+                .onDisappear { isModelUsageExpanded = false }
             case .trend:
                 TrendDetailView(
                     presentation: TrendPresentation(snapshot: snapshot, timeZone: timeZone),

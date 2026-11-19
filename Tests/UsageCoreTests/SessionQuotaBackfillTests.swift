@@ -297,14 +297,32 @@ final class SessionQuotaBackfillTests: XCTestCase {
             deviceID: try XCTUnwrap(metadata[.systemNumber] as? NSNumber).int64Value,
             inode: try XCTUnwrap(metadata[.systemFileNumber] as? NSNumber).int64Value,
             committedOffset: Int64(content.utf8.count + 1), counterState: SessionCounterState(previousTotal: nil))
-        let legacyStore = try SQLiteUsageStore(databaseURL: database)
         var accumulator = SessionUsageAccumulator()
         let record = try XCTUnwrap(SessionLineParser().parse(line: Data(content.utf8)))
         let event = try XCTUnwrap(accumulator.ingest(record))
-        _ = try await legacyStore.insert(events: [StoredUsageEvent(signature: event.signature,
-            occurredAt: event.occurredAt, localDay: LocalDay(year: 2026, month: 10, day: 21), usage: event.usage)])
-        try await legacyStore.save(cursor: cursor)
-        try await legacyStore.close()
+        do {
+            // 用旧表结构写入样本，随后由新版存储一次性执行迁移。
+            let legacy = try SQLiteConnection(databaseURL: database)
+            let usage = try legacy.prepare(
+                "INSERT INTO usage_events VALUES (?, ?, '2026-10-21', ?, ?, ?);",
+                operation: "seed legacy event"
+            )
+            try usage.bind(event.signature, at: 1)
+            try usage.bind(event.occurredAt.timeIntervalSince1970, at: 2)
+            try usage.bind(event.usage.inputTokens, at: 3)
+            try usage.bind(event.usage.cachedInputTokens, at: 4)
+            try usage.bind(event.usage.outputTokens, at: 5)
+            XCTAssertEqual(try usage.step(), .done)
+            let statement = try legacy.prepare(
+                "INSERT INTO file_cursors VALUES (?, ?, ?, ?, NULL, NULL, NULL);",
+                operation: "seed legacy cursor"
+            )
+            try statement.bind(cursor.pathHash, at: 1)
+            try statement.bind(cursor.deviceID, at: 2)
+            try statement.bind(cursor.inode, at: 3)
+            try statement.bind(cursor.committedOffset, at: 4)
+            XCTAssertEqual(try statement.step(), .done)
+        }
 
         let store = try SQLiteUsageStore(databaseURL: database)
         try await store.migrate()
