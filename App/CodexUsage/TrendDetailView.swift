@@ -5,7 +5,6 @@ struct TrendDetailView: View {
     @Environment(\.usageColors) private var colors
     @State private var selectedDay: LocalDay?
     @State private var detailDay: LocalDay?
-    @State private var expandedModel: String?
     @State private var listContentWidth: CGFloat?
     @State private var showsQuotaExplanation = false
 
@@ -179,14 +178,20 @@ struct TrendDetailView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     Button {
                         selectedDay = day.day
-                        expandedModel = nil
                         detailDay = day.day
                     } label: {
                         HStack(spacing: columnSpacing) {
-                            Text(day.label)
-                                .font(.system(size: 12, weight: day.day == activeDay ? .semibold : .regular))
-                                .foregroundStyle(day.day == activeDay ? colors.accent : colors.primaryText)
-                                .frame(width: dateColumnWidth, alignment: .leading)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(day.label)
+                                    .font(.system(size: 12, weight: day.day == activeDay ? .semibold : .regular))
+                                    .foregroundStyle(day.day == activeDay ? colors.accent : colors.primaryText)
+                                if day.status == .localLive {
+                                    Text(day.statusLabel)
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(colors.secondaryText)
+                                }
+                            }
+                            .frame(width: dateColumnWidth, alignment: .leading)
                             VStack(alignment: .leading, spacing: 5) {
                                 Text(day.formattedTokens)
                                     .font(.system(size: 13, weight: day.tokens > 0 ? .semibold : .regular))
@@ -235,7 +240,7 @@ struct TrendDetailView: View {
                         get: { detailDay == day.day },
                         set: { if !$0, detailDay == day.day { detailDay = nil } }
                     ), arrowEdge: .trailing) {
-                        dayDetails(day)
+                        DayUsageDetailView(day: day)
                     }
                 }
                 .id(day.day)
@@ -243,13 +248,32 @@ struct TrendDetailView: View {
         }
     }
 
-    private func dayDetails(_ day: TrendDayPresentation) -> some View {
+    private var emptyState: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "chart.bar")
+                .font(.system(size: 28, weight: .light))
+            Text("暂无趋势数据")
+                .font(.system(size: 13))
+        }
+        .foregroundStyle(colors.secondaryText)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+struct DayUsageDetailView: View {
+    @Environment(\.usageColors) private var colors
+    @Environment(\.dismiss) private var dismiss
+    @State private var expandedModel: String?
+
+    let day: TrendDayPresentation
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text("\(day.label) 用量详情")
                     .font(.system(size: 13, weight: .semibold))
                 Spacer(minLength: 8)
-                Button { detailDay = nil } label: {
+                Button { dismiss() } label: {
                     Image(systemName: "xmark")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(colors.secondaryText)
@@ -260,11 +284,11 @@ struct TrendDetailView: View {
                 .accessibilityLabel("关闭当日详情")
             }
             Rectangle().fill(colors.border.opacity(0.6)).frame(height: 1)
-            // 普通日期按内容收紧，多次重置时仅让详情滚动，七天列表保持原位。
+            // 多次重置时只滚动详情，保留后方页面的位置。
             ViewThatFits(in: .vertical) {
-                dayDetailContent(day)
+                dayDetailContent
                 ScrollView {
-                    dayDetailContent(day)
+                    dayDetailContent
                         .padding(.trailing, 12)
                 }
             }
@@ -277,7 +301,7 @@ struct TrendDetailView: View {
         .background(colors.background)
     }
 
-    private func dayDetailContent(_ day: TrendDayPresentation) -> some View {
+    private var dayDetailContent: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
                 Text("完整 Token")
@@ -320,17 +344,6 @@ struct TrendDetailView: View {
         .foregroundStyle(colors.secondaryText)
         .frame(maxWidth: .infinity, alignment: .leading)
         .fixedSize(horizontal: false, vertical: true)
-    }
-
-    private var emptyState: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "chart.bar")
-                .font(.system(size: 28, weight: .light))
-            Text("暂无趋势数据")
-                .font(.system(size: 13))
-        }
-        .foregroundStyle(colors.secondaryText)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func statusColor(_ status: UsageCalibrationStatus) -> Color {

@@ -33,9 +33,15 @@ struct MenuBarPresentation: Equatable {
             remainingPercent: remainingPercent,
             isFatal: isFatal
         )
-        self.isStale = isStale && !isFatal
-        accessibilityLabel = "Codex 周额度 \(title)"
-            + (self.isStale ? "，数据已过期" : "")
+        self.isStale = isStale && !isFatal && remainingPercent != nil
+        if isFatal {
+            accessibilityLabel = "Codex 周额度 \(title)"
+        } else if remainingPercent == nil {
+            accessibilityLabel = "Codex 等待官方额度"
+        } else {
+            accessibilityLabel = "Codex 周额度剩余 \(title)"
+                + (self.isStale ? "，数据可能已过期" : "")
+        }
         help = accessibilityLabel + (lastUpdatedAt.map {
             "\n上次额度更新：" + UsageFormatters.dateTime($0, timeZone: timeZone)
         } ?? "")
@@ -56,6 +62,7 @@ struct OverviewPresentation: Equatable {
     let resetTime: String?
     let todayTotal: String
     let todayQuota: DayQuotaPresentation
+    let todayDetail: TrendDayPresentation
     let inputTokens: String
     let cachedInputTokens: String
     let outputTokens: String
@@ -90,6 +97,7 @@ struct OverviewPresentation: Equatable {
         }
 
         todayQuota = DayQuotaPresentation(day: snapshot.today, timeZone: timeZone)
+        todayDetail = TrendDayPresentation(usage: snapshot.today, quota: todayQuota, isToday: true)
         currentCycleQuota = UsageFormatters.cycleQuotaUsage(snapshot.currentCycle?.quotaUsedPercent)
         currentCycleQuotaPercent = UsageFormatters.quotaConsumedPercent(snapshot.currentCycle?.quotaUsedPercent)
         todayTotal = UsageFormatters.tokens(snapshot.today.localTokens)
@@ -122,26 +130,16 @@ struct OverviewPresentation: Equatable {
             currentCycleStatus = "暂无数据"
         }
 
-        staleMessage = snapshot.status == .stale
-            ? UsageFormatters.calibration(.stale)
-            : nil
-        lastUpdated = Self.lastUpdated(
-            snapshot.lastUpdatedAt,
-            now: now,
-            timeZone: timeZone
-        )
-    }
-
-    private static func lastUpdated(
-        _ date: Date,
-        now: Date,
-        timeZone: TimeZone
-    ) -> String {
-        let elapsedSeconds = max(now.timeIntervalSince(date), 0)
-        guard elapsedSeconds >= 60 * 60 else {
-            return UsageFormatters.lastUpdated(date, now: now)
+        if snapshot.isQuotaStale(at: now) {
+            staleMessage = "额度为上次记录"
+        } else if snapshot.quotaRefreshFailed == true {
+            staleMessage = "暂时无法获取额度"
+        } else {
+            staleMessage = snapshot.status == .stale ? "部分用量未能更新" : nil
         }
-        return UsageFormatters.dateTime(date, timeZone: timeZone) + " 更新"
+        lastUpdated = snapshot.quota.map {
+            "额度更新于 " + UsageFormatters.dateTime($0.fetchedAt, timeZone: timeZone)
+        } ?? "等待官方额度"
     }
 }
 
@@ -243,6 +241,23 @@ struct TrendDayPresentation: Equatable, Identifiable {
     let quotaHelp: String
     let quotaDetails: String
     let quotaIsPartial: Bool
+
+    init(usage: UsageDay, quota: DayQuotaPresentation, isToday: Bool) {
+        day = usage.day
+        label = UsageFormatters.day(usage.day)
+        tokens = usage.displayedTokens
+        localTokens = usage.localTokens
+        modelUsage = usage.modelUsage ?? []
+        formattedTokens = UsageFormatters.tokens(usage.displayedTokens)
+        status = usage.status
+        statusLabel = usage.status == .localLive && !isToday ? "本地统计" : UsageFormatters.calibration(usage.status)
+        quotaPercent = quota.percent
+        quotaSegments = quota.segments
+        resetLabel = quota.resetLabel
+        quotaHelp = quota.help
+        quotaDetails = quota.details
+        quotaIsPartial = quota.isPartial
+    }
 }
 
 struct TrendPresentation: Equatable {
@@ -254,28 +269,15 @@ struct TrendPresentation: Equatable {
     init(snapshot: UsageSnapshot, timeZone: TimeZone = .autoupdatingCurrent) {
         today = snapshot.today.day
         days = snapshot.recentDays.suffix(7).map { day in
-            let quota = DayQuotaPresentation(day: day, timeZone: timeZone)
-            return TrendDayPresentation(
-                day: day.day,
-                label: UsageFormatters.day(day.day),
-                tokens: day.displayedTokens,
-                localTokens: day.localTokens,
-                modelUsage: day.modelUsage ?? [],
-                formattedTokens: UsageFormatters.tokens(day.displayedTokens),
-                status: day.status,
-                statusLabel: UsageFormatters.calibration(day.status),
-                quotaPercent: quota.percent,
-                quotaSegments: quota.segments,
-                resetLabel: quota.resetLabel,
-                quotaHelp: quota.help,
-                quotaDetails: quota.details,
-                quotaIsPartial: quota.isPartial
+            TrendDayPresentation(
+                usage: day, quota: DayQuotaPresentation(day: day, timeZone: timeZone),
+                isToday: day.day == snapshot.today.day
             )
         }
-        totalTokens = days.reduce(0) { $0 + $1.tokens }
-        averageTokens = days.isEmpty
-            ? 0
-            : totalTokens / Int64(days.count)
+        // 多天累加可能超过单日计数上限，日均仍按完整合计计算。
+        let sum = days.reduce(Decimal.zero) { $0 + Decimal($1.tokens) }
+        totalTokens = NSDecimalNumber(decimal: min(sum, Decimal(Int64.max))).int64Value
+        averageTokens = NSDecimalNumber(decimal: sum / Decimal(max(days.count, 1))).int64Value
     }
 }
 

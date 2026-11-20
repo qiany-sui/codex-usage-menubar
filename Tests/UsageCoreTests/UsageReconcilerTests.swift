@@ -103,13 +103,18 @@ final class UsageReconcilerTests: XCTestCase {
         XCTAssertEqual(snapshot.status, .unavailable)
     }
 
-    func testMissingDaysInsideOfficialRangeAreCalibratedAsZero() throws {
+    func testTrendAndCycleUseLocalTokensForMissingDaysAndHonorOfficialZero() throws {
         let calendar = shanghaiCalendar()
         let now = try date("2026-09-03T12:00:00+08:00")
         let official = [
             OfficialUsageDay(
                 day: LocalDay(year: 2026, month: 8, day: 28),
                 tokens: 100,
+                fetchedAt: now
+            ),
+            OfficialUsageDay(
+                day: LocalDay(year: 2026, month: 8, day: 30),
+                tokens: 0,
                 fetchedAt: now
             ),
             OfficialUsageDay(
@@ -138,6 +143,11 @@ final class UsageReconcilerTests: XCTestCase {
                 output: 4
             )
         ]
+        let cycle = quotaCycle(
+            startsAt: try date("2026-08-28T00:00:00+08:00"),
+            endsAt: try date("2026-09-03T00:00:00+08:00"),
+            usage: events.reduce(.zero) { addingForFixture($0, $1.usage) }
+        )
 
         let snapshot = UsageReconciler().snapshot(
             now: now,
@@ -145,23 +155,23 @@ final class UsageReconcilerTests: XCTestCase {
             quota: nil,
             events: events,
             officialDays: official,
-            cycles: [],
+            cycles: [cycle],
             lastUpdatedAt: now
         )
 
         XCTAssertEqual(
             snapshot.recentDays.map(\.displayedTokens),
-            [100, 0, 0, 200, 34, 0, 0]
+            [100, 12, 0, 200, 34, 0, 0]
         )
         XCTAssertEqual(
             snapshot.recentDays.map(\.officialTokens),
-            [100, 0, 0, 200, nil, nil, nil]
+            [100, nil, 0, 200, nil, nil, nil]
         )
         XCTAssertEqual(
             snapshot.recentDays.map(\.status),
             [
                 .calibrated,
-                .calibrated,
+                .localLive,
                 .calibrated,
                 .calibrated,
                 .localLive,
@@ -169,6 +179,11 @@ final class UsageReconcilerTests: XCTestCase {
                 .localLive
             ]
         )
+        let cycleDays = try XCTUnwrap(snapshot.cycleHistory.single?.dailyUsage)
+        let completedTrendDays = snapshot.recentDays.dropLast()
+        XCTAssertEqual(cycleDays.map(\.day), completedTrendDays.map(\.day))
+        XCTAssertEqual(cycleDays.map(\.displayedTokens), completedTrendDays.map(\.displayedTokens))
+        XCTAssertEqual(cycleDays.map(\.status), completedTrendDays.map(\.status))
     }
 
     func testDailyAggregationUsesStoredLocalDayInsteadOfTimestampDay() throws {

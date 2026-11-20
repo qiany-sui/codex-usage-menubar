@@ -63,6 +63,9 @@ enum UsageFormatters {
 
     static func resetCountdown(resetsAt: Date, now: Date) -> String {
         let remainingSeconds = resetsAt.timeIntervalSince(now)
+        if remainingSeconds <= 0 {
+            return "重置时间已过，等待新额度"
+        }
         guard remainingSeconds >= 60 else {
             return "即将重置"
         }
@@ -82,22 +85,6 @@ enum UsageFormatters {
             return "\(totalHours) 小时后重置"
         }
         return "\(totalMinutes) 分钟后重置"
-    }
-
-    static func lastUpdated(_ date: Date, now: Date) -> String {
-        let elapsedSeconds = max(now.timeIntervalSince(date), 0)
-        if elapsedSeconds < 60 {
-            return "刚刚更新"
-        }
-        if elapsedSeconds < 60 * 60 {
-            return "\(Int(elapsedSeconds / 60)) 分钟前更新"
-        }
-
-        return dateTime(
-            date,
-            timeZone: TimeZone(identifier: "Asia/Shanghai")!,
-            locale: Locale(identifier: "zh_CN")
-        ) + " 更新"
     }
 
     static func day(_ value: LocalDay) -> String {

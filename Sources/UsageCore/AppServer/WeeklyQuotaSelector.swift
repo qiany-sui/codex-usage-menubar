@@ -7,17 +7,24 @@ public struct WeeklyQuotaSelector: Sendable {
         from response: RateLimitsResponse,
         fetchedAt: Date
     ) -> QuotaSnapshot? {
-        let buckets: [RateLimitBucket]
+        selection(from: response, fetchedAt: fetchedAt, patch: nil)?.quota
+    }
+
+    func selection(
+        from response: RateLimitsResponse, fetchedAt: Date, patch: RateLimitBucketPatch?
+    ) -> (quota: QuotaSnapshot, hasUsageReading: Bool)? {
+        let buckets: [(key: String?, bucket: RateLimitBucket)]
         if let byID = response.rateLimitsByLimitId, !byID.isEmpty {
-            buckets = byID
-                .sorted { $0.key < $1.key }
-                .map(\.value)
+            buckets = byID.sorted { $0.key < $1.key }.map { ($0.key, $0.value) }
         } else {
-            buckets = [response.rateLimits]
+            buckets = [(nil, response.rateLimits)]
         }
 
-        let candidates = buckets.flatMap { bucket in
-            [bucket.primary, bucket.secondary].compactMap { window -> Candidate? in
+        let candidates = buckets.flatMap { key, bucket in
+            let applies = patch?.applies(to: bucket, mapKey: key, rootID: response.rateLimits.limitId)
+            let bucketPatch = applies == true ? patch : nil
+            let windows = [(bucket.primary, bucketPatch?.primary), (bucket.secondary, bucketPatch?.secondary)]
+            return windows.compactMap { window, windowPatch -> Candidate? in
                 guard
                     let window,
                     let duration = window.windowDurationMins,
@@ -30,7 +37,8 @@ public struct WeeklyQuotaSelector: Sendable {
                     limitID: bucket.limitId ?? "unknown",
                     window: window,
                     duration: duration,
-                    resetSeconds: resetSeconds
+                    resetSeconds: resetSeconds,
+                    hasUsageReading: windowPatch?.value?.usedPercent.value != nil
                 )
             }
         }
@@ -42,7 +50,7 @@ public struct WeeklyQuotaSelector: Sendable {
         let resetsAt = Date(
             timeIntervalSince1970: TimeInterval(selected.resetSeconds)
         )
-        return QuotaSnapshot(
+        let quota = QuotaSnapshot(
             limitID: selected.limitID,
             usedPercent: selected.window.usedPercent,
             windowDurationMinutes: selected.duration,
@@ -52,6 +60,7 @@ public struct WeeklyQuotaSelector: Sendable {
             resetsAt: resetsAt,
             fetchedAt: fetchedAt
         )
+        return (quota, selected.hasUsageReading)
     }
 }
 
@@ -60,6 +69,7 @@ private struct Candidate {
     let window: RateLimitWindow
     let duration: Int
     let resetSeconds: Int64
+    let hasUsageReading: Bool
 
     static func isPreferred(
         _ lhs: Candidate,

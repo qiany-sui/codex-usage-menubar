@@ -99,6 +99,15 @@ public struct RateLimitBucketPatch: Decodable, Sendable {
         primary = try container.patchField(forKey: .primary)
         secondary = try container.patchField(forKey: .secondary)
     }
+
+    func applies(to bucket: RateLimitBucket, mapKey: String?, rootID: String?) -> Bool {
+        if let mapKey {
+            guard let targetID = limitId.applying(to: rootID), !targetID.isEmpty else { return false }
+            return mapKey == targetID || bucket.limitId == targetID
+        }
+        guard let targetID = limitId.value, let rootID else { return true }
+        return targetID == rootID
+    }
 }
 
 public struct RateLimitsUpdatedParams: Decodable, Sendable {
@@ -145,15 +154,16 @@ public extension RateLimitBucket {
 
 public extension RateLimitsResponse {
     func applying(_ update: RateLimitsUpdatedParams) -> RateLimitsResponse {
-        let mergedRateLimits = rateLimits.applying(update.rateLimits)
+        let patch = update.rateLimits
+        let mergedRateLimits = patch.applies(to: rateLimits, mapKey: nil, rootID: rateLimits.limitId)
+            ? rateLimits.applying(patch) : rateLimits
         let mergedByLimitID = rateLimitsByLimitId?.reduce(
             into: [String: RateLimitBucket]()
         ) {
             result, entry in
             let (key, bucket) = entry
-            if let limitID = mergedRateLimits.limitId, !limitID.isEmpty,
-               key == limitID || bucket.limitId == limitID {
-                result[key] = bucket.applying(update.rateLimits)
+            if patch.applies(to: bucket, mapKey: key, rootID: rateLimits.limitId) {
+                result[key] = bucket.applying(patch)
             } else {
                 result[key] = bucket
             }
@@ -175,13 +185,13 @@ private extension KeyedDecodingContainer {
     }
 }
 
-private extension PatchField {
+extension PatchField {
     var value: Value? {
         guard case let .value(value) = self else { return nil }
         return value
     }
 
-    func applying(to current: Value?) -> Value? {
+    fileprivate func applying(to current: Value?) -> Value? {
         switch self {
         case .missing:
             return current

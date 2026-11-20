@@ -47,7 +47,44 @@ public struct UsageDay: Codable, Equatable, Sendable {
     }
 }
 public struct QuotaCycle: Codable, Equatable, Sendable { public let startsAt:Date; public let endsAt:Date; public let usage:TokenBreakdown; public let displayedTokens:Int64; public let status:UsageCalibrationStatus; public let boundaryIsEstimated:Bool; public let quotaUsedPercent:Double?; public let lastRecordedQuota:QuotaSnapshot?; public let dailyUsage:[CycleUsageDay]?; public init(startsAt:Date,endsAt:Date,usage:TokenBreakdown,displayedTokens:Int64,status:UsageCalibrationStatus,boundaryIsEstimated:Bool,quotaUsedPercent:Double?=nil,lastRecordedQuota:QuotaSnapshot?=nil,dailyUsage:[CycleUsageDay]?=nil){self.startsAt=startsAt;self.endsAt=endsAt;self.usage=usage;self.displayedTokens=displayedTokens;self.status=status;self.boundaryIsEstimated=boundaryIsEstimated;self.quotaUsedPercent=quotaUsedPercent;self.lastRecordedQuota=lastRecordedQuota;self.dailyUsage=dailyUsage} }
-public struct UsageSnapshot: Codable, Equatable, Sendable { public let quota:QuotaSnapshot?; public let today:UsageDay; public let currentCycle:QuotaCycle?; public let recentDays:[UsageDay]; public let cycleHistory:[QuotaCycle]; public let lastUpdatedAt:Date; public let status:UsageCalibrationStatus; public init(quota:QuotaSnapshot?,today:UsageDay,currentCycle:QuotaCycle?,recentDays:[UsageDay],cycleHistory:[QuotaCycle],lastUpdatedAt:Date,status:UsageCalibrationStatus){self.quota=quota;self.today=today;self.currentCycle=currentCycle;self.recentDays=recentDays;self.cycleHistory=cycleHistory;self.lastUpdatedAt=lastUpdatedAt;self.status=status} }
+public struct UsageSnapshot: Codable, Equatable, Sendable {
+    public let quota: QuotaSnapshot?
+    public let today: UsageDay
+    public let currentCycle: QuotaCycle?
+    public let recentDays: [UsageDay]
+    public let cycleHistory: [QuotaCycle]
+    public let lastUpdatedAt: Date
+    public let status: UsageCalibrationStatus
+    public let quotaRefreshFailed: Bool?
+
+    public init(
+        quota: QuotaSnapshot?, today: UsageDay, currentCycle: QuotaCycle?,
+        recentDays: [UsageDay], cycleHistory: [QuotaCycle], lastUpdatedAt: Date,
+        status: UsageCalibrationStatus, quotaRefreshFailed: Bool? = nil
+    ) {
+        self.quota = quota
+        self.today = today
+        self.currentCycle = currentCycle
+        self.recentDays = recentDays
+        self.cycleHistory = cycleHistory
+        self.lastUpdatedAt = lastUpdatedAt
+        self.status = status
+        self.quotaRefreshFailed = quotaRefreshFailed
+    }
+
+    public func isQuotaStale(at now: Date) -> Bool {
+        guard let quota else { return false }
+        // 旧快照未记录失败来源，沿用当时的整体过期提示。
+        return (quotaRefreshFailed ?? (status == .stale)) || quota.isStale(at: now)
+    }
+}
+
+extension QuotaSnapshot {
+    func isStale(at now: Date) -> Bool {
+        let age = now.timeIntervalSince(fetchedAt)
+        return now >= resetsAt || !age.isFinite || abs(age) > 600
+    }
+}
 
 public struct QuotaConsumptionSegment: Codable, Equatable, Sendable {
     public let startsAt: Date

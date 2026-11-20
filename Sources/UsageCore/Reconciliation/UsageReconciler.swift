@@ -11,15 +11,13 @@ public struct UsageReconciler: Sendable {
         officialDays: [OfficialUsageDay],
         cycles: [QuotaCycle],
         lastUpdatedAt: Date,
-        quotaHistory: [QuotaSnapshot] = []
+        quotaHistory: [QuotaSnapshot] = [],
+        failedSources: Set<UsageRefreshFailureSource> = []
     ) -> UsageSnapshot {
         let todayStart = calendar.startOfDay(for: now)
         let todayDay = localDay(for: todayStart, calendar: calendar)
         let usageByDayAndModel = aggregateEventsByStoredDayAndModel(events)
         let officialByDay = latestOfficialDays(officialDays)
-        let officialRange = officialByDay.keys.min().flatMap { firstDay in
-            officialByDay.keys.max().map { firstDay...$0 }
-        }
 
         let recentDays = (-6...0).compactMap { offset -> UsageDay? in
             guard let dayDate = calendar.date(
@@ -38,26 +36,14 @@ public struct UsageReconciler: Sendable {
                     if lhs.totalTokens != rhs.totalTokens { return lhs.totalTokens > rhs.totalTokens }
                     return (lhs.model ?? "") < (rhs.model ?? "")
                 }
-            let official = officialByDay[day]
-            let isOfficiallyCovered = official != nil
-                || officialRange?.contains(day) == true
-            if day < todayDay, isOfficiallyCovered {
-                let officialTokens = official?.tokens ?? 0
-                return UsageDay(
-                    day: day,
-                    localUsage: localUsage,
-                    officialTokens: officialTokens,
-                    displayedTokens: officialTokens,
-                    status: .calibrated,
-                    modelUsage: modelUsage.isEmpty ? nil : modelUsage
-                )
-            }
+            let officialTokens = officialByDay[day]?.tokens
+            let calibratedTokens = day < todayDay ? officialTokens : nil
             return UsageDay(
                 day: day,
                 localUsage: localUsage,
-                officialTokens: official?.tokens,
-                displayedTokens: totalTokensClamped(localUsage),
-                status: .localLive,
+                officialTokens: officialTokens,
+                displayedTokens: calibratedTokens ?? totalTokensClamped(localUsage),
+                status: calibratedTokens == nil ? .localLive : .calibrated,
                 modelUsage: modelUsage.isEmpty ? nil : modelUsage
             )
         }
@@ -120,12 +106,13 @@ public struct UsageReconciler: Sendable {
             recentDays: daysWithQuotaConsumption,
             cycleHistory: cycleHistory,
             lastUpdatedAt: lastUpdatedAt,
-            status: snapshotStatus(
+            status: failedSources.isEmpty ? snapshotStatus(
                 now: now,
                 quota: quota,
                 today: today,
                 currentCycle: currentCycle
-            )
+            ) : .stale,
+            quotaRefreshFailed: failedSources.contains(.rateLimits) || failedSources.contains(.accountInitialization)
         )
     }
 
@@ -585,8 +572,7 @@ public struct UsageReconciler: Sendable {
         currentCycle: QuotaCycle?
     ) -> UsageCalibrationStatus {
         guard let quota else { return .unavailable }
-        let age = now.timeIntervalSince(quota.fetchedAt)
-        guard age.isFinite, abs(age) <= 600 else { return .stale }
+        guard !quota.isStale(at: now) else { return .stale }
 
         let statuses = [today.status, currentCycle?.status].compactMap { $0 }
         return statuses.min { statusStrength($0) < statusStrength($1) }

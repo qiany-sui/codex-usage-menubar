@@ -1580,6 +1580,8 @@ final class UsageServiceTests: XCTestCase {
         XCTAssertEqual(snapshot.quota?.remainingPercent, 70)
         XCTAssertEqual(snapshot.quota?.fetchedAt, now.addingTimeInterval(1))
         XCTAssertEqual(snapshot.status, .stale)
+        XCTAssertEqual(snapshot.quotaRefreshFailed, false)
+        XCTAssertFalse(snapshot.isQuotaStale(at: now.addingTimeInterval(1)))
         XCTAssertEqual(days.map(\.tokens), [400])
     }
 
@@ -1608,6 +1610,8 @@ final class UsageServiceTests: XCTestCase {
         XCTAssertEqual(snapshot.quota?.remainingPercent, 75)
         XCTAssertEqual(snapshot.quota?.fetchedAt, now)
         XCTAssertEqual(snapshot.status, .stale)
+        XCTAssertEqual(snapshot.quotaRefreshFailed, true)
+        XCTAssertTrue(snapshot.isQuotaStale(at: now.addingTimeInterval(1)))
         XCTAssertEqual(days.map(\.tokens), [450])
     }
 
@@ -1706,6 +1710,50 @@ final class UsageServiceTests: XCTestCase {
 
         XCTAssertEqual(snapshot?.quota?.remainingPercent, 69)
         XCTAssertEqual(snapshot?.quota?.windowDurationMinutes, 10_080)
+    }
+
+    func testOnlySelectedWeeklyWindowNotificationsRefreshFailedQuota() async throws {
+        let weekly = try XCTUnwrap(ServiceFixture.fullLimits.rateLimits.primary)
+        let short = RateLimitWindow(usedPercent: 18, windowDurationMins: 300, resetsAt: weekly.resetsAt)
+        let other = RateLimitBucket(limitId: "other", limitName: nil, primary: weekly, secondary: short)
+        for hasMappedLimits in [false, true] {
+            let fixture = try await ServiceFixture.make()
+            let codex = RateLimitBucket(
+                limitId: "codex", limitName: nil,
+                primary: hasMappedLimits ? short : weekly, secondary: hasMappedLimits ? weekly : short
+            )
+            await fixture.accountClient.setLimits(RateLimitsResponse(
+                rateLimits: codex, rateLimitsByLimitId: hasMappedLimits ? ["codex": codex, "other": other] : nil
+            ))
+            let startup = try await fixture.service.refresh(reason: .startup, now: now)
+            await fixture.accountClient.setRateLimitsFailure(rpcFailure())
+            _ = try await fixture.service.refresh(reason: .manual, now: now.addingTimeInterval(1))
+            let shortPatch = hasMappedLimits ? #"{"primary":{"usedPercent":42}}"# : #"{"secondary":{"usedPercent":42}}"#
+            for patch in [shortPatch, #"{"limitId":"other","primary":{"usedPercent":76}}"#] {
+                let update = try JSONDecoder().decode(
+                    RateLimitsUpdatedParams.self, from: Data("{\"rateLimits\":\(patch)}".utf8)
+                )
+                await fixture.accountClient.enqueue(.rateLimitsUpdated(update))
+                let unchanged = try await fixture.service.processNextAccountNotification(
+                    now: { [now] in now.addingTimeInterval(2) }
+                )
+                XCTAssertEqual(unchanged?.quota, startup.quota)
+                XCTAssertEqual(unchanged?.quotaRefreshFailed, true)
+            }
+            let weeklyPatch = hasMappedLimits ? #"{"secondary":{"usedPercent":25}}"# : #"{"primary":{"usedPercent":25}}"#
+            let update = try JSONDecoder().decode(
+                RateLimitsUpdatedParams.self, from: Data("{\"rateLimits\":\(weeklyPatch)}".utf8)
+            )
+            await fixture.accountClient.enqueue(.rateLimitsUpdated(update))
+            let recovered = try await fixture.service.processNextAccountNotification(
+                now: { [now] in now.addingTimeInterval(3) }
+            )
+            XCTAssertEqual(recovered?.quota?.fetchedAt, now.addingTimeInterval(3))
+            XCTAssertEqual(recovered?.quota?.limitID, "codex")
+            XCTAssertEqual(recovered?.quotaRefreshFailed, false)
+            let counts = await fixture.accountClient.callCounts()
+            XCTAssertEqual(counts.limits, 2)
+        }
     }
 
     func testNotificationWithoutFullResponseFallsBackToRead() async throws {
@@ -2245,7 +2293,9 @@ final class UsageServiceTests: XCTestCase {
 
         XCTAssertNil(notification)
         XCTAssertEqual(failed.status, .stale)
+        XCTAssertEqual(failed.quotaRefreshFailed, true)
         XCTAssertNotEqual(recovered.status, .stale)
+        XCTAssertEqual(recovered.quotaRefreshFailed, false)
     }
 
     func testShortRetainedCyclesKeepRecentSevenDaysAcrossSnapshots() async throws {

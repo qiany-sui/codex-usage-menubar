@@ -72,6 +72,7 @@ func tokenJSONLine(
 
 func sampleSnapshot(
     status: UsageCalibrationStatus = .calibrated,
+    quotaRefreshFailed: Bool? = nil,
     remainingPercent: Double = 62,
     today: TokenBreakdown = TokenBreakdown(
         inputTokens: 100,
@@ -180,7 +181,8 @@ func sampleSnapshot(
         recentDays: recentDays,
         cycleHistory: history,
         lastUpdatedAt: now,
-        status: status
+        status: status,
+        quotaRefreshFailed: quotaRefreshFailed
     )
 }
 

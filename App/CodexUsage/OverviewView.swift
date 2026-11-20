@@ -16,6 +16,7 @@ struct OverviewView: View {
     @Environment(\.usageColors) private var colors
     @State private var contentHeight: CGFloat?
     @State private var expandedModel: String?
+    @State private var showsTodayDetail = false
 
     init(
         presentation: OverviewPresentation,
@@ -79,7 +80,7 @@ struct OverviewView: View {
                     }
                 }
             }
-            .frame(maxHeight: style == .aurora ? contentHeight : nil)
+            .frame(maxHeight: style == .aurora && presentation.modelUsage.isEmpty ? contentHeight : nil)
             .onPreferenceChange(OverviewContentHeightKey.self) { contentHeight = $0 }
             .padding(.top, 8)
             navigationRow
@@ -104,7 +105,7 @@ struct OverviewView: View {
                     todayTotal.fixedSize(horizontal: false, vertical: true)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                Button(action: onShowTrend) {
+                todayDetailButton {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("当日额度消耗")
                             .font(.system(size: 11, weight: .medium))
@@ -114,9 +115,6 @@ struct OverviewView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
-                .help(presentation.todayQuota.help + "\n点击查看最近 7 天。")
-                .accessibilityLabel(presentation.todayQuota.summary + "，查看最近 7 天")
             }
             Rectangle().fill(colors.border).frame(height: 1)
                 .padding(.vertical, 5)
@@ -418,7 +416,7 @@ struct OverviewView: View {
                     todayTotal.frame(height: todayMetricHeight)
                 }
                 Spacer(minLength: 0)
-                Button(action: onShowTrend) {
+                todayDetailButton {
                     VStack(alignment: .trailing, spacing: 2) {
                         Text("当日额度消耗")
                             .font(.system(size: 11))
@@ -430,9 +428,6 @@ struct OverviewView: View {
                         || presentation.todayQuota.segments.count > 2 ? nil : 126)
                     .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
-                .help(presentation.todayQuota.help + "\n点击查看最近 7 天。")
-                .accessibilityLabel(presentation.todayQuota.summary + "，查看最近 7 天")
             }
             GeometryReader { geometry in
                 let available = geometry.size.width - 18
@@ -465,6 +460,17 @@ struct OverviewView: View {
         if quota.segments.count > 2 { return 46 }
         if quota.isPartial && quota.segments.isEmpty { return 40 }
         return 31.86
+    }
+
+    private func todayDetailButton<Label: View>(@ViewBuilder label: () -> Label) -> some View {
+        Button(action: { showsTodayDetail = true }, label: label)
+            .buttonStyle(.plain)
+            .help(presentation.todayQuota.help + "\n点击查看当日详情。")
+            .accessibilityLabel("当日额度消耗，" + presentation.todayQuota.summary)
+            .accessibilityHint("查看当日用量详情")
+            .popover(isPresented: $showsTodayDetail, arrowEdge: .trailing) {
+                DayUsageDetailView(day: presentation.todayDetail)
+            }
     }
 
     @ViewBuilder

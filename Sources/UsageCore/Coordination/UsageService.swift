@@ -376,8 +376,19 @@ public actor UsageService {
         let previousFailureCount = refreshState.consecutiveFailureCount
         var operationHadFailure = false
         var response = lastFullRateLimits?.applying(update)
-        var quota = response.flatMap {
-            quotaSelector.select(from: $0, fetchedAt: now)
+        var quota: QuotaSnapshot?
+        if let response, let selection = quotaSelector.selection(
+            from: response, fetchedAt: now, patch: update.rateLimits
+        ) {
+            if selection.hasUsageReading {
+                quota = selection.quota
+            } else if let previous = lastFullRateLimits,
+                      quotaSelector.select(from: previous, fetchedAt: now) == selection.quota {
+                // 其他窗口的通知可以更新合并缓存，但不是一次新的周额度采样。
+                lastFullRateLimits = response
+                if let lastBuiltSnapshot, canReuse(lastBuiltSnapshot, now: now) { return lastBuiltSnapshot }
+                return try await currentSnapshotLocked(now: now)
+            }
         }
         if quota == nil {
             do {
@@ -527,6 +538,7 @@ public actor UsageService {
             }
         }
 
+        let refreshState = try await store.refreshState()
         let snapshot = reconciler.snapshot(
             now: now,
             calendar: calendar,
@@ -540,14 +552,11 @@ public actor UsageService {
                 events: events,
                 officialDays: officialDays
             ),
-            quotaHistory: quotaHistory
+            quotaHistory: quotaHistory,
+            failedSources: refreshState.failedSources
         )
-        let refreshState = try await store.refreshState()
-        let finalSnapshot = refreshState.failedSources.isEmpty
-            ? snapshot
-            : snapshot.markedStale()
-        lastBuiltSnapshot = finalSnapshot
-        return finalSnapshot
+        lastBuiltSnapshot = snapshot
+        return snapshot
     }
 
     private func historyStart(now: Date) -> Date {
@@ -737,20 +746,6 @@ public actor UsageService {
                 ? incremented(previousCount)
                 : state.failedSources.isEmpty ? 0 : previousCount,
             failedSources: state.failedSources
-        )
-    }
-}
-
-private extension UsageSnapshot {
-    func markedStale() -> UsageSnapshot {
-        UsageSnapshot(
-            quota: quota,
-            today: today,
-            currentCycle: currentCycle,
-            recentDays: recentDays,
-            cycleHistory: cycleHistory,
-            lastUpdatedAt: lastUpdatedAt,
-            status: .stale
         )
     }
 }

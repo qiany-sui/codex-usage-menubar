@@ -54,11 +54,11 @@ struct UsagePopoverView: View {
     private var popoverHeight: CGFloat {
         let baseHeight = UsageTheme.popoverSize.height
         guard viewModel.page == .overview,
-              let models = viewModel.snapshot?.today.modelUsage, !models.isEmpty else {
+              viewModel.snapshot?.today.modelUsage?.isEmpty == false else {
             return baseHeight
         }
-        let rowsHeight = isModelUsageExpanded ? CGFloat(min(models.count, 4)) * 25 : 0
-        return baseHeight + 26 + rowsHeight
+        // 只为折叠入口预留高度，模型行在首页原有的滚动区域内展开。
+        return baseHeight + 26
     }
 
     @ViewBuilder

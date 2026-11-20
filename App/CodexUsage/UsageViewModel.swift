@@ -46,7 +46,7 @@ final class UsageViewModel: ObservableObject {
         MenuBarPresentation(
             remainingPercent: snapshot?.quota?.remainingPercent,
             isFatal: fatalErrorMessage != nil,
-            isStale: isStale,
+            isStale: snapshot?.isQuotaStale(at: environment.now()) == true,
             lastUpdatedAt: snapshot?.quota?.fetchedAt
         )
     }

@@ -152,7 +152,9 @@ final class UsageViewModelTests: XCTestCase {
     }
 
     func testStaleSnapshotKeepsContentAndShowsCompactWarning() async throws {
-        let snapshot = try sampleSnapshot(status: .stale)
+        let legacyData = try JSONEncoder().encode(sampleSnapshot(status: .stale))
+        let snapshot = try JSONDecoder().decode(UsageSnapshot.self, from: legacyData)
+        XCTAssertNil(snapshot.quotaRefreshFailed)
         let fixture = ViewModelFixture(snapshot: snapshot)
 
         await fixture.viewModel.start()
@@ -164,6 +166,22 @@ final class UsageViewModelTests: XCTestCase {
         XCTAssertTrue(fixture.viewModel.menuBarPresentation.isStale)
         XCTAssertTrue(fixture.viewModel.menuBarPresentation.accessibilityLabel.contains("已过期"))
         await fixture.viewModel.stop()
+    }
+
+    func testNonQuotaFailureLeavesMenuBarFreshUntilQuotaAges() async throws {
+        let snapshot = try sampleSnapshot(status: .stale, quotaRefreshFailed: false)
+        let now = try XCTUnwrap(snapshot.quota?.fetchedAt)
+        let fixture = ViewModelFixture(snapshot: snapshot, now: { now })
+        await fixture.viewModel.start()
+        XCTAssertFalse(fixture.viewModel.menuBarPresentation.isStale)
+        let overview = OverviewPresentation(snapshot: snapshot, now: now, timeZone: utcCalendar().timeZone)
+        XCTAssertEqual(overview.staleMessage, "部分用量未能更新")
+        await fixture.viewModel.stop()
+
+        let later = ViewModelFixture(snapshot: snapshot, now: { now.addingTimeInterval(601) })
+        await later.viewModel.start()
+        XCTAssertTrue(later.viewModel.menuBarPresentation.isStale)
+        await later.viewModel.stop()
     }
 
     func testSQLiteFailureShowsFatalStateWithoutDeletingDatabase() async throws {
@@ -1526,6 +1544,13 @@ private final class FakeCodexHomeChooser {
         }
         XCTFail("等待目录选择器打开超时")
     }
+}
+
+@MainActor
+func startedTestViewModel(snapshot: UsageSnapshot) async -> UsageViewModel {
+    let viewModel = ViewModelFixture(snapshot: snapshot).viewModel
+    await viewModel.start()
+    return viewModel
 }
 
 @MainActor

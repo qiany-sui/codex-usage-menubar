@@ -34,6 +34,27 @@ final class UsagePresentationTests: XCTestCase {
         XCTAssertEqual(historical.localTokens, 120)
     }
 
+    func testOverviewShowsTodayDetailsEvenWhenSevenDayHistoryIsEmpty() throws {
+        let base = try sampleSnapshot()
+        let model = ModelTokenUsage(model: "test-model", usage: base.today.localUsage)
+        let day = UsageDay(
+            day: base.today.day, localUsage: model.usage, officialTokens: 240,
+            displayedTokens: 240, status: .calibrated, quotaConsumedPercent: 9, modelUsage: [model]
+        )
+        let snapshot = UsageSnapshot(
+            quota: nil, today: day, currentCycle: nil, recentDays: [], cycleHistory: [],
+            lastUpdatedAt: base.lastUpdatedAt, status: .calibrated
+        )
+        let overview = OverviewPresentation(snapshot: snapshot, now: base.lastUpdatedAt, timeZone: timeZone)
+
+        XCTAssertEqual(overview.todayDetail.day, day.day)
+        XCTAssertEqual(overview.todayDetail.tokens, 240)
+        XCTAssertEqual(overview.todayDetail.localTokens, 120)
+        XCTAssertEqual(overview.todayDetail.modelUsage, [model])
+        XCTAssertEqual(overview.todayDetail.quotaPercent, "9%")
+        XCTAssertTrue(TrendPresentation(snapshot: snapshot).days.isEmpty)
+    }
+
     func testStaleMenuBarPreservesQuotaAndExplainsItsTimestamp() throws {
         let presentation = MenuBarPresentation(
             remainingPercent: 62, isFatal: false, isStale: true,
@@ -62,7 +83,7 @@ final class UsagePresentationTests: XCTestCase {
 
         XCTAssertEqual(normal.icon, .quota(progress: 0.62))
         XCTAssertEqual(normal.title, "62%")
-        XCTAssertEqual(normal.accessibilityLabel, "Codex 周额度 62%")
+        XCTAssertEqual(normal.accessibilityLabel, "Codex 周额度剩余 62%")
         XCTAssertEqual(fatal.icon, .fatal)
         XCTAssertEqual(fatal.title, "!")
         XCTAssertEqual(fatal.accessibilityLabel, "Codex 周额度 !")
@@ -85,6 +106,7 @@ final class UsagePresentationTests: XCTestCase {
         XCTAssertEqual(over.icon, .quota(progress: 1))
         XCTAssertEqual(under.icon, .quota(progress: 0))
         XCTAssertEqual(missing.icon, .quota(progress: nil))
+        XCTAssertEqual(missing.accessibilityLabel, "Codex 等待官方额度")
     }
 
     func testMenuBarQuotaImageProvidesCompactVisibleTemplatePixels() throws {
@@ -431,7 +453,7 @@ final class UsagePresentationTests: XCTestCase {
         XCTAssertEqual(presentation.progress, 0.62, accuracy: 0.001)
         XCTAssertEqual(presentation.resetCountdown, "1 天后重置")
         XCTAssertEqual(presentation.resetTime, "09/02 · 16:00")
-        XCTAssertEqual(presentation.staleMessage, "数据可能已过期")
+        XCTAssertEqual(presentation.staleMessage, "额度为上次记录")
         XCTAssertFalse(presentation.currentCycleTokens.isEmpty)
         XCTAssertEqual(presentation.currentCycleStatus, "数据可能已过期")
     }
@@ -445,7 +467,8 @@ final class UsagePresentationTests: XCTestCase {
             recentDays: base.recentDays,
             cycleHistory: base.cycleHistory,
             lastUpdatedAt: base.lastUpdatedAt,
-            status: base.status
+            status: .stale,
+            quotaRefreshFailed: true
         )
 
         let presentation = OverviewPresentation(
@@ -458,6 +481,8 @@ final class UsagePresentationTests: XCTestCase {
         XCTAssertEqual(presentation.progress, 0)
         XCTAssertEqual(presentation.resetCountdown, "暂无数据")
         XCTAssertNil(presentation.resetTime)
+        XCTAssertEqual(presentation.lastUpdated, "等待官方额度")
+        XCTAssertEqual(presentation.staleMessage, "暂时无法获取额度")
         XCTAssertEqual(presentation.currentCycleTokens, "--")
         XCTAssertEqual(presentation.currentCycleStatus, "暂无数据")
         XCTAssertEqual(presentation.currentCycleQuota, "额度记录不足")
@@ -480,7 +505,7 @@ final class UsagePresentationTests: XCTestCase {
         XCTAssertEqual(under.progress, 0)
     }
 
-    func testOverviewFormatsLastUpdatedRelativeToNow() throws {
+    func testOverviewUsesQuotaTimestampIndependentlyOfOtherSources() throws {
         let base = try sampleSnapshot()
         let now = try fixedDate("2026-09-01T08:00:00Z")
         let snapshot = UsageSnapshot(
@@ -499,7 +524,7 @@ final class UsagePresentationTests: XCTestCase {
             timeZone: timeZone
         )
 
-        XCTAssertEqual(presentation.lastUpdated, "7 分钟前更新")
+        XCTAssertEqual(presentation.lastUpdated, "额度更新于 9/1 16:00")
         XCTAssertNil(presentation.staleMessage)
     }
 
@@ -516,6 +541,16 @@ final class UsagePresentationTests: XCTestCase {
         )
         XCTAssertEqual(trend.totalTokens, 3_500)
         XCTAssertEqual(trend.averageTokens, 500)
+    }
+
+    func testTrendIncludesSaturatedLocalDayWithoutOverflowingTheTotalOrAverage() throws {
+        let snapshot = try sampleSnapshot(
+            recentDayTotals: [2, .max, 0], recentStatuses: [.calibrated, .localLive, .calibrated]
+        )
+        let trend = TrendPresentation(snapshot: snapshot)
+
+        XCTAssertEqual(trend.totalTokens, .max)
+        XCTAssertEqual(trend.averageTokens, 3_074_457_345_618_258_603)
     }
 
     func testTrendUsesSharedChineseCompactTokenUnits() throws {
@@ -653,15 +688,17 @@ final class UsagePresentationTests: XCTestCase {
             recentStatuses: [
                 .calibrated,
                 .partiallyCalibrated,
+                .localLive,
                 .localLive
             ]
         )
 
+        let days = TrendPresentation(snapshot: snapshot).days.suffix(4)
         XCTAssertEqual(
-            TrendPresentation(snapshot: snapshot)
-                .days.suffix(3).map(\.status),
-            [.calibrated, .partiallyCalibrated, .localLive]
+            days.map(\.status),
+            [.calibrated, .partiallyCalibrated, .localLive, .localLive]
         )
+        XCTAssertEqual(days.suffix(2).map(\.statusLabel), ["本地统计", "本机实时"])
     }
 
     func testTrendDoesNotPadMissingDaysAndHandlesEmptyAverage() throws {

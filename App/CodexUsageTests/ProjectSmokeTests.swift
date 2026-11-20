@@ -175,6 +175,106 @@ final class ProjectSmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testTodayQuotaOpensAndClosesDetailsOnOverviewInBothStyles() throws {
+        let base = try sampleSnapshot()
+        let model = ModelTokenUsage(model: "example-model", usage: base.today.localUsage)
+        let today = UsageDay(
+            day: base.today.day, localUsage: model.usage, officialTokens: nil,
+            displayedTokens: 120, status: .localLive, modelUsage: [model]
+        )
+        let snapshot = UsageSnapshot(
+            quota: nil, today: today, currentCycle: nil, recentDays: [], cycleHistory: [],
+            lastUpdatedAt: base.lastUpdatedAt, status: .localLive
+        )
+        let overview = OverviewPresentation(snapshot: snapshot, now: base.lastUpdatedAt, timeZone: utcCalendar().timeZone)
+
+        let restoreAccessibility = enableAccessibility()
+        defer { restoreAccessibility() }
+
+        for style in UsageStyle.allCases {
+            var trendOpens = 0
+            var expanded = true
+            let view = OverviewView(
+                presentation: overview, style: .constant(style),
+                isModelUsageExpanded: Binding(get: { expanded }, set: { expanded = $0 }),
+                onShowTrend: { trendOpens += 1 }
+            )
+            let window = NSWindow(contentViewController: NSHostingController(
+                rootView: view.modifier(UsagePopoverSurface(style: style, height: 570))
+                    .environment(\.accessibilityEnabled, true)
+            ))
+            window.makeKeyAndOrderFront(nil)
+            defer { window.orderOut(nil) }
+            try press("当日额度消耗")
+            try press("关闭当日详情")
+            XCTAssertNil(findButton("关闭当日详情", visible: false))
+            XCTAssertEqual(trendOpens, 0)
+            XCTAssertTrue(expanded)
+            XCTAssertNotNil(findButton("example-model"))
+            try press("最近 7 天")
+            XCTAssertEqual(trendOpens, 1)
+        }
+    }
+
+    @MainActor
+    func testTogglingModelListKeepsPopoverAndNavigationInPlace() async throws {
+        let base = try sampleSnapshot()
+        let modelNames = (1...4).map { "model-\($0)" }
+        let usage = TokenBreakdown(inputTokens: 25, cachedInputTokens: 10, outputTokens: 5)
+        let today = UsageDay(
+            day: base.today.day, localUsage: base.today.localUsage, officialTokens: nil,
+            displayedTokens: base.today.displayedTokens, status: .localLive,
+            modelUsage: modelNames.map { ModelTokenUsage(model: $0, usage: usage) }
+        )
+        let snapshot = UsageSnapshot(
+            quota: base.quota, today: today, currentCycle: base.currentCycle, recentDays: [today],
+            cycleHistory: [], lastUpdatedAt: base.lastUpdatedAt, status: .localLive
+        )
+        let viewModel = await startedTestViewModel(snapshot: snapshot)
+        addTeardownBlock { await viewModel.stop() }
+        let suite = "CodexUsageFoldTests-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let restoreAccessibility = enableAccessibility()
+        defer { restoreAccessibility() }
+
+        for style in UsageStyle.allCases {
+            defaults.set(style.rawValue, forKey: UsageStyle.storageKey)
+            let controller = NSHostingController(rootView:
+                UsagePopoverView(viewModel: viewModel, now: { base.lastUpdatedAt }, styleDefaults: defaults)
+                    .environment(\.accessibilityEnabled, true)
+            )
+            let window = NSWindow(contentViewController: controller)
+            window.setContentSize(controller.view.fittingSize)
+            window.makeKeyAndOrderFront(nil)
+            defer { window.orderOut(nil) }
+            controller.view.layoutSubtreeIfNeeded()
+
+            func buttonFrame(_ name: String) throws -> NSRect {
+                let button = try XCTUnwrap(findButton(name), name)
+                let frame = try XCTUnwrap(button.accessibilityFrame?(), name)
+                XCTAssertFalse(frame.isEmpty, name)
+                return controller.view.convert(window.convertFromScreen(frame), from: nil)
+            }
+
+            XCTAssertNil(findButton("model-4", visible: false))
+            let toggle = try buttonFrame("按模型")
+            let navigation = try buttonFrame("最近 7 天")
+            let size = controller.view.fittingSize
+            for expanded in [true, false] {
+                try press("按模型")
+                for name in modelNames {
+                    XCTAssertEqual(findButton(name, visible: expanded) != nil, expanded, name)
+                }
+                controller.view.layoutSubtreeIfNeeded()
+                XCTAssertEqual(controller.view.fittingSize, size, style.title)
+                XCTAssertEqual(try buttonFrame("最近 7 天"), navigation, style.title)
+                XCTAssertEqual(try buttonFrame("按模型"), toggle, style.title)
+            }
+        }
+    }
+
+    @MainActor
     func testOverviewModelListStartsCollapsedInBothStyles() throws {
         let base = try sampleSnapshot()
 
@@ -351,6 +451,42 @@ final class ProjectSmokeTests: XCTestCase {
                 )
             }
         }
+    }
+
+    @MainActor
+    private func enableAccessibility() -> () -> Void {
+        // AppKit 在辅助技术启用后才会向测试宿主公开 SwiftUI 滚动区域的子节点。
+        let enhancedUI = NSAccessibility.Attribute(rawValue: "AXEnhancedUserInterface")
+        let previous = NSApp.accessibilityAttributeValue(enhancedUI) as? Bool ?? false
+        NSApp.accessibilitySetValue(true, forAttribute: enhancedUI)
+        return { NSApp.accessibilitySetValue(previous, forAttribute: enhancedUI) }
+    }
+
+    @MainActor
+    private func findButton(_ name: String, visible: Bool = true) -> AnyObject? {
+        func button(in element: AnyObject) -> AnyObject? {
+            // SwiftUI 的节点支持标准无障碍方法，但不声明遵从整套 AppKit 协议。
+            let title = element.accessibilityLabel?() ?? element.accessibilityTitle?() ?? ""
+            if element.accessibilityRole?() == .button, title.hasPrefix(name) { return element }
+            for child in element.accessibilityChildren?() ?? [] {
+                if let found = button(in: child as AnyObject) { return found }
+            }
+            return nil
+        }
+        let deadline = Date().addingTimeInterval(2)
+        var match: AnyObject?
+        repeat {
+            match = NSApp.windows.lazy.filter(\.isVisible).compactMap { button(in: $0) }.first
+            if (match != nil) == visible { break }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+        } while Date() < deadline
+        return match
+    }
+
+    @MainActor
+    private func press(_ name: String) throws {
+        let element = try XCTUnwrap(findButton(name), name)
+        XCTAssertTrue(element.accessibilityPerformPress?() == true, name)
     }
 
     @MainActor
