@@ -1,36 +1,47 @@
-# Codex Usage Menubar
+# Codex Usage
 
-Codex Usage Menubar 是一个仅在本机运行的 macOS 菜单栏应用，用来查看 Codex 的今日 token 用量、最近 7 天趋势，以及当前周期和最近 8 个已完成周期的额度历史。官方接口暂时不可用时，应用会保留最后一次成功快照并标记数据已过期。
+Codex Usage 是一个在本机运行的用量工具。macOS 菜单栏和 Windows 任务栏托盘使用同一套紧凑的 Tauri 面板与 Rust 统计核心。可查看今日 Token、周额度、最近 7 天趋势、当前额度周期和最近 8 个已结束周期。收起面板后会继续后台刷新，点击「退出」可结束采集。
 
-v1 已包含完整的菜单栏 App、`UsageCore`、SQLite 持久化、会话增量索引、官方用量读取、周期校准、自动刷新和安全退出清理。
+查看官方额度需要安装并登录 [Codex CLI](https://github.com/openai/codex)。应用会查找 PATH、官方安装位置和支持的 npm 安装布局。自定义 CLI 路径可通过 `CODEX_CLI_PATH` 指定。官方暂时不可用时仍会显示本机用量与最近成功读取的额度。
 
-刷新时先显示本地最新统计，再并行读取官方额度和用量；各项结果返回后及时更新页面。已有启动、手动、唤醒或弹窗刷新正在进行时，重复打开弹窗会复用该轮刷新。
+首次启动时，应用会尝试使用已选择的目录、Codex 返回的目录、`CODEX_HOME` 和用户目录下的 `.codex`。可以右键点击菜单栏或托盘图标，选择「选择目录…」，再选择包含 `sessions` 或 `archived_sessions` 的 Codex Home。
 
-额度平时每 5 分钟采集一次，本地午夜前后各 10 分钟及已知重置前 10 分钟内加密到约每分钟一次。正常退出（包括随 Codex 自动退出）前会额外尝试保存一次额度快照，最多等待 3 秒；失败或超时仍会退出。启动和唤醒后继续刷新并补采会话日志。电脑休眠、离线、应用退出或被强制结束期间仍可能缺少记录，补采不会将无法确认的历史额度标成完整。
+## macOS
 
-应用还包含一个轻量后台辅助程序：Codex 桌面应用启动时自动启动 Codex Usage，Codex 真正退出后自动退出 Codex Usage。
+支持 Apple Silicon 和 macOS 13 及以上。双击 `Codex Usage.app`，也可通过菜单栏图标随时打开用量窗口。
 
-## 环境要求
+构建需要 Rust、Node.js 和 Xcode Command Line Tools。在项目根目录运行：
 
-- Apple Silicon Mac；当前产物仅包含 `arm64`
-- macOS 13 或更高版本
-- Xcode 16.4，并已接受 Xcode License
-- 本机已安装 Codex CLI，或已安装内含 `codex` 可执行文件的 ChatGPT 桌面应用
-- 命令行示例使用 `rtk` 命令代理
+```bash
+rtk npm ci
+rtk proxy env APPLE_SIGNING_IDENTITY=- npm run tauri -- build --ci --bundles app -- --locked
+```
 
-## 用 Xcode 运行
+本机签名产物位于 `target/release/bundle/macos/Codex Usage.app`。调试可以运行 `rtk npm run tauri -- dev`。升级本机应用时，按 [AGENTS.md](AGENTS.md) 执行备份、安装和启动台核验。
 
-1. 双击 `App/CodexUsage.xcodeproj`，不要打开根目录的 `Package.swift`。
-2. 在 Xcode 顶部将 Scheme 选择为 `CodexUsage`，运行目标选择 `My Mac`。
-3. 按 `⌘R`。出现 `Build Succeeded` 后，到 macOS 菜单栏寻找饼图图标和额度百分比。
-4. 点击菜单栏项目查看概览；应用没有 Dock 图标属于正常行为。
-5. 停止调试时，点击 Xcode 左上角的停止按钮或按 `⌘.`。正常退出应用时，请在弹窗底部点击“退出”。
+## Windows 11
 
-## 跟随 Codex 自动启停
+支持 x64 和 ARM64。运行对应架构的 `*-setup.exe`，安装后可通过开始菜单和任务栏右下角的托盘打开应用。Windows 需要 WebView2。系统缺少运行时时，安装程序会尝试安装。
+
+在 GitHub Actions 的 **Desktop build** 中下载产物，或在安装 [Tauri Windows 构建依赖](https://v2.tauri.app/start/prerequisites/#windows)的 Windows 电脑上运行：
+
+```powershell
+npm ci
+cargo test --locked -p usage-core
+.\Windows\Package.ps1
+```
+
+安装程序位于 `target/<Windows Rust 目标>/release/bundle/nsis/`。Windows 版从开始菜单或托盘手动启动。
+
+## macOS 下跟随 Codex 自动启停
 
 把构建产物放进“应用程序”后，需要手动启动一次 Codex Usage。应用会注册内嵌的后台辅助程序；macOS 首次使用时可能要求在“系统设置 → 通用 → 登录项”中允许它后台运行。
 
+如果 macOS 拒绝运行临时签名的助手，需用同一个 Apple 签发的签名身份签署主程序和助手。构建时将 `APPLE_SIGNING_IDENTITY=-` 换成钥匙串中的签名身份。手动打开菜单栏应用仍可查看统计。[Apple 签名说明](https://developer.apple.com/forums/thread/799910)
+
 后续替换为新版本并重新启动 Codex Usage 时，应用会在主程序、助手、启动配置或安装路径发生变化后自动刷新后台注册，不需要手动删除旧登录项。仅更新主程序时也会刷新，避免旧注册失效导致无法跟随 Codex 启动。
+
+发布新的 macOS 构建时，请递增 `src-tauri/tauri.macos.conf.json` 中的 `bundle.macOS.bundleVersion`。本机实测替换同一构建号的临时签名应用时，系统可能继续按旧构建校验后台助手。
 
 替换应用时，不要把旧版本改名后继续留在 `/Applications` 或 `~/Applications`。即使目录名变成 `Codex Usage.app.backup-*`，macOS 仍可能按包内相同的 bundle identifier 将它收录为另一个启动台项目。需要保留旧版本时，请先移到“废纸篓”或 Applications 目录之外，再复制并启动新版本。
 
@@ -43,13 +54,13 @@ v1 已包含完整的菜单栏 App、`UsageCore`、SQLite 持久化、会话增�
 
 后台辅助程序只通过 macOS 查询运行中应用的 bundle identifier，不读取 Codex 的窗口、任务、对话或文件内容。
 
-首次启动时，应用会依次尝试使用 Codex 返回的目录、`CODEX_HOME` 和 `~/.codex`。如果仍找不到，会提示选择 Codex Home；请选择内部包含 `sessions` 或 `archived_sessions` 的文件夹。取消后可在选择页重新点击“选择 Codex Home”；已有数据但授权失效时，可点击标题区域的“重新选择”。
+## 用量与额度口径
 
-弹窗首页显示本周剩余额度、今日总量及输入/缓存/输出明细。首页卡片可滚动，底部导航和退出入口保持可见；点击“最近 7 天”或“历史周期”可在同一弹窗内查看详情，点击左上角返回。刷新按钮位于右上角，加载、目录选择和错误页面也保留退出入口。首页显示最近一次成功取得周额度的时间。额度读取失败或读数已过期时，菜单栏保留上次额度并显示时钟标记，悬停可查看采集时间。仅 Token 统计更新失败时，额度仍按自身的采集状态显示。超过预计重置时间尚未取得新额度时，首页会提示等待新额度。
+弹窗首页显示本周剩余额度、今日总量及输入/缓存/输出明细。底部可打开「最近 7 天」和「历史周期」，在子页左上角返回概览。右上角可刷新或切换「极光卡片」与「环形仪表」，macOS 升级后会继续使用旧版保存的样式。首页底部显示最近一次取得周额度的时间和退出入口。额度读取失败或读数已过期时，菜单栏保留上次额度，首页提示额度状态。超过预计重置时间尚未取得新额度时，首页会提示等待新额度。
 
 首页“今日 Token”和“最近 7 天”的单日详情会按模型显示本机用量。首页的列表默认收拢，点击“按模型”即可展开或收拢。点按模型行可展开输入、其中缓存和输出。升级后会重扫保留范围内的本地日志，为旧记录补上模型名。缺少模型归属的本地用量列为“未知模型”。单日详情显示本机记录合计，便于和账户校准总量对照。七天趋势和周期明细对已结束的完整自然日采用相同规则：有当天的官方 Token 记录就采用官方数值，包括明确返回的 0；缺少当天的官方记录时显示本机用量并标注“本地统计”。
 
-“最近 7 天”的每日列表按日期倒序排列，今天位于最上方；柱状图保持从旧到新的时间顺序。每日列表显示“当日额度消耗”：直接计算官方已用额度的当日增量，例如 38% → 45% 显示 7%，与 Token 数量无关。按本地自然日统计，今天统计到最近的额度快照。重置日显示重置时间，并分别展示“重置前 / 重置后”的消耗；一天多次重置时按时间顺序显示各段；点击日期行可打开独立详情卡，查看完整 Token 数值、每段时间范围和记录完整性说明，七天列表保持原位；点击卡片外部或关闭按钮可收起，较长详情可在卡片内滚动。每段百分比对应各自周期额度，不把跨重置合计显示成当前周期消耗，Token 列仍为全天总量。零点、日末和重置前使用不超过 10 分钟的记录；跨夜空档只有在同周期两侧读数相同时才能确认边界值。边界记录不足但有可确认增量时显示“已记录消耗”并标注“记录不完整”；重置日各段分别保留已记录增量，不合并成完整的全天百分比。没有可确认增量的分段显示“记录不足”，无重置日显示 `--`。数据精度和延迟取决于官方额度快照；“Token 状态”仅表示 Token 校准状态，缺失的额度记录不会凭空补成 0。
+“最近 7 天”的每日列表按日期倒序排列，今天位于最上方。横条按七天最高单日 Token 对比。每日列表显示“当日额度消耗”：直接计算官方已用额度的当日增量，例如 38% → 45% 显示 7%，与 Token 数量无关。按本地自然日统计，今天统计到最近的额度快照。重置日显示重置时间，并分别展示“重置前 / 重置后”的消耗；一天多次重置时按时间顺序显示各段；点击日期行可打开独立详情卡，查看完整 Token 数值、每段时间范围和记录完整性说明，七天列表保持原位；点击卡片外部或关闭按钮可收起，较长详情可在卡片内滚动。每段百分比对应各自周期额度，不把跨重置合计显示成当前周期消耗，Token 列仍为全天总量。零点、日末和重置前使用不超过 10 分钟的记录；跨夜空档只有在同周期两侧读数相同时才能确认边界值。边界记录不足但有可确认增量时显示“已记录消耗”并标注“记录不完整”；重置日各段分别保留已记录增量，不合并成完整的全天百分比。没有可确认增量的分段显示“记录不足”，无重置日显示 `—`。数据精度和延迟取决于官方额度快照；“Token 状态”仅表示 Token 校准状态，缺失的额度记录不会凭空补成 0。
 
 会话索引同时补采 `token_count.rate_limits` 中的周额度快照，补齐应用退出或接口暂时失败时遗漏的历史记录。升级后自动重扫保留范围内的日志，Token 按原事件签名去重。日志额度仅补充主动读取已确认的周期，排除并发会话携带的回退旧值和与后续主动读取冲突的值；当前额度和刷新状态仍以主动读取为准。补采后同周期跨夜读数一致即可重算两天的完整消耗，确实无法确认的缺口仍标为记录不完整。
 
@@ -59,60 +70,29 @@ v1 已包含完整的菜单栏 App、`UsageCore`、SQLite 持久化、会话增�
 
 历史周期结合官方额度记录识别重置：连续额度记录中已用额度仍为 0 时的起点修正归入同一次重置，后续刷新会自动修复已有碎片并重新汇总 Token。已发生额度消耗后的真实重置会保留，因此前后两个真实周期可能共享同一天作为边界日期。
 
-右上角的调色盘菜单可切换“环形仪表”和“极光卡片”。默认使用“极光卡片”，原“原生精修”或“霓光仪表”的已存偏好会迁移到“极光卡片”。选择会自动保存，下次启动继续使用；深浅色跟随 macOS，趋势和历史页的强调色随样式切换。缓存 Token 已包含在输入 Token 中，明细标为“其中缓存”。
+界面深浅色跟随系统。缓存 Token 已包含在输入 Token 中，明细标为「其中缓存」。
 
-## 构建可双击的 Release App
+## SQLite 数据兼容
 
-1. 在 Xcode 菜单选择 Product → Scheme → Edit Scheme。
-2. 选择 Run，将 Build Configuration 改为 Release，然后关闭设置。
-3. 按 `⌘B` 完成构建。
-4. 在 Xcode 左侧 Products 下右键 `Codex Usage.app`，选择 Show in Finder。
+Rust 应用直接打开原有数据库：
 
-命令行可重复生成到固定位置：
+- macOS：`~/Library/Application Support/Codex Usage/usage.sqlite`
+- Windows：`%LOCALAPPDATA%\Codex Usage\usage.sqlite`
 
-```bash
-rtk xcodebuild build -project App/CodexUsage.xcodeproj -scheme CodexUsage -configuration Release -destination 'platform=macOS,arch=arm64' -derivedDataPath DerivedData/Release
-```
+沿用 Swift SQLite v3 表结构、Unix 时间戳、事件去重签名和文件游标。较早版本数据库沿用原有升级逻辑，重新补扫日志并保留旧数据。升级前请退出旧版应用。Mac 上已保存的 Codex Home 会在可解析时继续使用。
 
-产物路径：`DerivedData/Release/Build/Products/Release/Codex Usage.app`。本机命令行构建使用 Xcode 的 “Sign to Run Locally”，适合在当前 Mac 上运行；项目未配置 Developer ID、公证或 Mac App Store 发布流程。
+macOS 和 Windows 各自读取本机 Codex 日志与本机数据库。官方已结束自然日以账号接口返回的值校准，两端都可显示当前账号的周额度。
 
-## 测试与无签名构建
-
-运行 `UsageCore` 全套测试：
+## 测试
 
 ```bash
-rtk swift test
+rtk cargo test --locked --workspace
+rtk proxy node --check ui/app.js
 ```
 
-运行菜单栏 App 的 Debug 和 Release 测试：
+macOS 上改动后台助手时，用 `rtk cargo test --locked --workspace --features codex-usage/macos-watcher` 一并运行助手测试。
 
-```bash
-rtk xcodebuild test -project App/CodexUsage.xcodeproj -scheme CodexUsage -configuration Debug -destination 'platform=macOS,arch=arm64' -derivedDataPath DerivedData/Tests CODE_SIGNING_ALLOWED=NO
-rtk xcodebuild test -project App/CodexUsage.xcodeproj -scheme CodexUsage -configuration Release -destination 'platform=macOS,arch=arm64' -derivedDataPath DerivedData/Tests-Release CODE_SIGNING_ALLOWED=NO ENABLE_TESTABILITY=YES
-```
-
-`ENABLE_TESTABILITY=YES` 只作用于 Release 测试命令，不会改变正常 Release App 的构建配置。
-
-验证无签名 Debug 和 Release 构建：
-
-```bash
-rtk xcodebuild build -project App/CodexUsage.xcodeproj -scheme CodexUsage -configuration Debug -destination 'platform=macOS,arch=arm64' -derivedDataPath DerivedData/Debug CODE_SIGNING_ALLOWED=NO
-rtk xcodebuild build -project App/CodexUsage.xcodeproj -scheme CodexUsage -configuration Release -destination 'platform=macOS,arch=arm64' -derivedDataPath DerivedData/Unsigned-Release CODE_SIGNING_ALLOWED=NO
-```
-
-签名交付与无签名 Release 构建使用不同输出目录，避免覆盖待安装产物；交付规则见 [AGENTS.md](AGENTS.md)。
-
-## 数据位置与发布边界
-
-应用数据库只保存在：
-
-```text
-~/Library/Application Support/Codex Usage/usage.sqlite
-```
-
-目录授权 bookmark 保存在本机应用偏好设置中。仓库和 Codex Home 内不会写入应用数据库。数据至少覆盖最近 7 个本地自然日，同时保留当前周期加最近 8 个已完成周期；两个范围之外的本地用量事件、官方日桶和额度快照会被清理。每个额度标识会额外保留清理边界前的最后一条快照，用于跨日边界计算。
-
-App Sandbox 当前关闭，因为应用需要读取用户选择的 Codex Home、监听 session 文件变化并启动本机 `codex app-server`。因此 v1 定位为本机直接运行的开源工具，不是 Mac App Store 构建。
+Rust 测试复用原有 JSONL fixture，并验证由 Swift SQLite 存储写出的 v3 数据、早期库升级、事务回滚、日志续读和额度周期。Windows CI 对两个架构执行 Core 测试、构建 NSIS 安装包并检查打包前的应用能启动。
 
 ## 数据来源与隐私边界
 
@@ -122,33 +102,17 @@ App Sandbox 当前关闭，因为应用需要读取用户选择的 Codex Home、
 - `account/rateLimits/read`
 - `account/usage/read`
 
-本地 session 索引只提取 token 计数、模型标识、时间和文件游标。公开模型、日志和 SQLite 数据库不会保存消息正文或凭据；resolver 和 indexer 不读取或打开 `auth.json`。应用没有遥测、分析 SDK 或第三方数据上传。关闭应用时会停止目录监听和子进程，并在关闭存储时截断 WAL checkpoint、释放 SQLite 连接。
+本地 session 索引只提取 token 计数、模型标识、时间和文件游标。公开模型、日志和 SQLite 数据库不会保存消息正文或凭据；resolver 和 indexer 不读取或打开 `auth.json`。应用没有遥测、分析 SDK 或第三方数据上传。退出时停止监听、退出子进程并为 SQLite 执行 WAL checkpoint。
 
 ## 项目结构
 
 ```text
-App/CodexUsage/          # macOS 菜单栏应用
-App/CodexUsageWatcher/   # 跟随 Codex 启停的 LaunchAgent 辅助程序
-App/CodexUsageTests/     # App 状态、格式化和工程测试
-Sources/UsageCore/
-├── AppServer/           # app-server JSON-RPC 只读客户端
-├── Coordination/        # 刷新策略与快照编排
-├── Domain/              # 公开用量模型
-├── Persistence/         # SQLite 存储与游标
-├── Reconciliation/      # 本地、官方数据和额度周期校准
-└── Sessions/            # session JSONL 增量索引
-Tests/UsageCoreTests/    # Core 单元、集成和隐私回归测试
-docs/superpowers/        # 设计与实施计划
+crates/usage-core/   # Rust 统计、数据库、日志和 Codex app-server
+src-tauri/          # 桌面应用、托盘、目录对话框和系统集成
+ui/                 # macOS 和 Windows 共用的界面
+Windows/            # Windows 构建和启动测试
+App/ Sources/ Tests/ # Swift 旧版及统计兼容性基准
 ```
-
-Swift Package 只导出 `UsageCore` library product；App 通过本地 Package 依赖复用它。
-
-## 设计与实施资料
-
-- [Phase 1 产品与架构设计](docs/superpowers/specs/2026-08-31-codex-usage-menubar-design.md)
-- [Phase 1 实施计划](docs/superpowers/plans/2026-08-31-codex-usage-core.md)
-- [Phase 2 菜单栏 App 设计](docs/superpowers/specs/2026-09-01-codex-usage-menubar-app-design.md)
-- [Phase 2 实施计划](docs/superpowers/plans/2026-09-01-codex-usage-menubar-app.md)
 
 ## License
 

@@ -1,0 +1,41 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Codex Usage",
+  "mainBinaryName": "Codex Usage",
+  "identifier": "com.local.CodexUsage",
+  "build": {
+    "frontendDist": "../ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "usage",
+        "title": "Codex Usage",
+        "width": 360,
+        "height": 440,
+        "decorations": false,
+        "resizable": false,
+        "alwaysOnTop": true,
+        "visible": false,
+        "skipTaskbar": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "shortDescription": "Codex local usage and quota tracker",
+    "licenseFile": "../LICENSE",
+    "icon": ["icons/icon.png", "icons/icon.icns", "icons/icon.ico"],
+    "macOS": {
+      "minimumSystemVersion": "13.0",
+      "files": {
+        "Library/LaunchAgents/com.local.CodexUsage.Watcher.plist": "resources/com.local.CodexUsage.Watcher.plist"
+      }
+    }
+  }
+}

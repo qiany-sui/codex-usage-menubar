@@ -2,6 +2,9 @@
 .build/
 .swiftpm/
 DerivedData/
+/target/
+/node_modules/
+/src-tauri/gen/schemas/
 *.xcuserstate
 xcuserdata/
 *.xcworkspace/xcuserdata/

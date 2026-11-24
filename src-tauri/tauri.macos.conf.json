@@ -1,0 +1,10 @@
+{
+  "build": {
+    "features": ["macos-watcher"]
+  },
+  "bundle": {
+    "macOS": {
+      "bundleVersion": "3"
+    }
+  }
+}

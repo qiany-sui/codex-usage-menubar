@@ -1,0 +1,6 @@
+{
+  "identifier": "usage",
+  "description": "Local usage window",
+  "windows": ["usage"],
+  "permissions": ["core:event:default"]
+}

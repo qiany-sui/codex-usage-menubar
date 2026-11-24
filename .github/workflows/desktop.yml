@@ -1,0 +1,74 @@
+name: Desktop build
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2025
+            arch: x64
+            target: x86_64-pc-windows-msvc
+          - runner: windows-11-arm
+            arch: arm64
+            target: aarch64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: rustup update stable --no-self-update
+      - run: rustup default stable
+      - run: rustup target add ${{ matrix.target }}
+      - run: npm ci
+      - run: cargo test --locked -p usage-core
+      - shell: pwsh
+        run: ./Windows/Package.ps1 -Architecture ${{ matrix.arch }}
+      - shell: pwsh
+        run: ./Windows/Test-Package.ps1 -Executable './target/${{ matrix.target }}/release/Codex Usage.exe'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Codex-Usage-windows-${{ matrix.arch }}
+          path: target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
+
+  macos:
+    name: macOS arm64
+    runs-on: macos-15
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: rustup update stable --no-self-update
+      - run: rustup default stable
+      - run: npm ci
+      - run: cargo test --locked --workspace --features codex-usage/macos-watcher
+      - run: npm run tauri -- build --ci --bundles app -- --locked
+        env:
+          APPLE_SIGNING_IDENTITY: "-"
+      - run: |
+          bundle='target/release/bundle/macos/Codex Usage.app'
+          test -x "$bundle/Contents/MacOS/CodexUsageWatcher"
+          codesign --verify --deep --strict "$bundle"
+          ditto -c -k --keepParent "$bundle" 'target/release/Codex-Usage-macos-arm64.zip'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Codex-Usage-macos-arm64
+          path: target/release/Codex-Usage-macos-arm64.zip
+          if-no-files-found: error

@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Codex Usage</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <main id="content" class="overview" aria-label="Codex Usage">
+    <p class="empty" role="status">正在读取本机用量…</p>
+  </main>
+  <dialog id="details" aria-labelledby="detail-title">
+    <header class="detail-head">
+      <h2 id="detail-title"></h2>
+      <form method="dialog"><button type="submit" class="icon-button" aria-label="关闭" title="关闭">×</button></form>
+    </header>
+    <div id="detail-content"></div>
+  </dialog>
+</body>
+</html>
