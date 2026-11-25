@@ -23,6 +23,9 @@ tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"
 usage-core = { path = "../crates/usage-core" }
 
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Graphics_Gdi"] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-app-kit = "0.3"

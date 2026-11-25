@@ -54,14 +54,16 @@ impl Desktop {
                 .snapshot
                 .as_ref()
                 .and_then(|snapshot| snapshot.quota.as_ref());
-            let subtitle = quota.map(|quota| {
+            let remaining = quota.map(|quota| {
+                format!("{:.0}", (100.0 - quota.used_percent).clamp(0.0, 100.0))
+            });
+            let subtitle = quota.zip(remaining.as_ref()).map(|(quota, remaining)| {
                 let stale = quota.is_stale(now())
                     || view
                         .snapshot
                         .as_ref()
                         .is_some_and(|snapshot| snapshot.quota_refresh_failed);
-                let remaining = (100.0 - quota.used_percent).clamp(0.0, 100.0);
-                format!("{remaining:.0}%{}", if stale { " ·" } else { "" })
+                format!("{remaining}%{}", if stale { " ·" } else { "" })
             });
             let tooltip = subtitle.as_ref().map_or_else(
                 || "Codex Usage".to_string(),
@@ -70,6 +72,15 @@ impl Desktop {
             let _ = tray.set_tooltip(Some(tooltip));
             #[cfg(target_os = "macos")]
             let _ = tray.set_title(subtitle);
+            #[cfg(target_os = "windows")]
+            {
+                // Windows 托盘不支持标题，把与悬停提示相同的数字绘制到图标里。
+                let icon = remaining
+                    .as_deref()
+                    .and_then(|value| crate::windows::quota_icon(value).ok())
+                    .or_else(|| app.default_window_icon().cloned());
+                let _ = tray.set_icon(icon);
+            }
         }
         let _ = app.emit(EVENT, view);
     }

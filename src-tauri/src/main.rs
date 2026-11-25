@@ -6,6 +6,8 @@
 mod desktop;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(target_os = "windows")]
+mod windows;
 
 fn main() {
     if let Err(error) = desktop::run() {

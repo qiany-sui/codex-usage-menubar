@@ -511,6 +511,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-single-instance",
  "usage-core",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

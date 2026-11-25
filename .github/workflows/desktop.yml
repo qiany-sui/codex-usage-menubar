@@ -24,7 +24,7 @@ jobs:
       - run: rustup default stable
       - run: rustup target add x86_64-pc-windows-msvc
       - run: npm ci
-      - run: cargo test --locked -p usage-core
+      - run: cargo test --locked --workspace
       - shell: pwsh
         run: ./Windows/Package.ps1
       - shell: pwsh
