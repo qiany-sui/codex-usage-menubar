@@ -10,6 +10,7 @@ use objc2_service_management::{SMAppService, SMAppServiceStatus};
 use sha2::{Digest, Sha256};
 
 mod bundle;
+pub mod panel;
 
 use bundle::{USAGE_BUNDLE_ID, app_bundle};
 

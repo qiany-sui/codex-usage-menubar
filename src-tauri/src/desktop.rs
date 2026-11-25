@@ -6,11 +6,13 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock, mpsc};
 use std::time::{Duration, Instant, SystemTime};
+#[cfg(not(target_os = "macos"))]
+use tauri::LogicalSize;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{
-    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, Rect, RunEvent, State,
-    WebviewWindow, WindowEvent,
+    AppHandle, Emitter, Manager, PhysicalPosition, Rect, RunEvent, State, WebviewWindow,
+    WindowEvent,
 };
 use tauri_plugin_dialog::DialogExt;
 use usage_core::model::{UsageSnapshot, unix_seconds};
@@ -145,17 +147,24 @@ fn hide_usage(window: WebviewWindow) {
 }
 
 #[tauri::command]
-fn resize_usage_panel(app: AppHandle, window: WebviewWindow, has_model_rows: bool) {
+fn resize_usage_panel(window: WebviewWindow, has_model_rows: bool) {
     let height = if has_model_rows { 466.0 } else { 440.0 };
-    let _ = window.set_size(LogicalSize::new(360.0, height));
-    if let Some(rect) = app
-        .tray_by_id(TRAY)
-        .and_then(|tray| tray.rect().ok().flatten())
+    #[cfg(target_os = "macos")]
+    crate::macos::panel::resize(&window, height);
+    #[cfg(not(target_os = "macos"))]
     {
-        position_panel(&window, rect);
+        let _ = window.set_size(LogicalSize::new(360.0, height));
+        if let Some(rect) = window
+            .app_handle()
+            .tray_by_id(TRAY)
+            .and_then(|tray| tray.rect().ok().flatten())
+        {
+            position_panel(&window, rect);
+        }
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn position_panel(window: &WebviewWindow, rect: Rect) {
     // 不同显示器可能有不同缩放比例，先找托盘所在的屏幕，再计算面板位置。
     let icon = rect.position.to_physical::<f64>(1.0);
@@ -192,8 +201,21 @@ fn position_panel(window: &WebviewWindow, rect: Rect) {
     ));
 }
 
-fn show_window(app: &AppHandle, refresh: bool) {
+fn show_window(app: &AppHandle, refresh: bool, click: Option<(PhysicalPosition<f64>, Rect)>) {
     if let Some(window) = app.get_webview_window(WINDOW) {
+        let focused_click = click.is_some() && window.is_focused().unwrap_or(false);
+        #[cfg(target_os = "macos")]
+        let same_screen = app
+            .tray_by_id(TRAY)
+            .and_then(|tray| crate::macos::panel::position(&window, &tray, click))
+            .unwrap_or(false);
+        #[cfg(not(target_os = "macos"))]
+        let same_screen = true;
+        if focused_click && same_screen {
+            let _ = window.hide();
+            return;
+        }
+        #[cfg(not(target_os = "macos"))]
         if let Some(rect) = app
             .tray_by_id(TRAY)
             .and_then(|tray| tray.rect().ok().flatten())
@@ -215,7 +237,7 @@ pub fn run() -> Result<()> {
     #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
     let mut app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
-            show_window(app, true)
+            show_window(app, true, None)
         }))
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
@@ -262,14 +284,14 @@ pub fn run() -> Result<()> {
                 .on_menu_event(|app, event| {
                     let desktop = app.state::<Arc<Desktop>>();
                     match event.id().as_ref() {
-                        "open" => show_window(app, true),
+                        "open" => show_window(app, true, None),
                         "refresh" => {
                             let _ = desktop
                                 .requests
                                 .send(Request::Refresh(RefreshReason::Manual));
                         }
                         "home" => {
-                            show_window(app, false);
+                            show_window(app, false, None);
                             select_codex_home(app.clone());
                         }
                         "quit" => desktop.exit(),
@@ -280,17 +302,12 @@ pub fn run() -> Result<()> {
                     if let TrayIconEvent::Click {
                         button: MouseButton::Left,
                         button_state: MouseButtonState::Up,
+                        position,
+                        rect,
                         ..
                     } = event
                     {
-                        let app = tray.app_handle();
-                        if let Some(window) = app.get_webview_window(WINDOW)
-                            && window.is_focused().unwrap_or(false)
-                        {
-                            let _ = window.hide();
-                        } else {
-                            show_window(app, true);
-                        }
+                        show_window(tray.app_handle(), true, Some((position, rect)));
                     }
                 })
                 .build(app)?;
@@ -300,7 +317,7 @@ pub fn run() -> Result<()> {
                 .name("usage-runtime".into())
                 .spawn(move || worker(handle, desktop, input, root, profile))?;
             if !std::env::args_os().any(|arg| arg == "--companion") {
-                show_window(app.handle(), false);
+                show_window(app.handle(), false, None);
             }
             Ok(())
         })
@@ -326,7 +343,7 @@ pub fn run() -> Result<()> {
 
     app.run(|app, event| match event {
         #[cfg(target_os = "macos")]
-        RunEvent::Reopen { .. } => show_window(app, true),
+        RunEvent::Reopen { .. } => show_window(app, true, None),
         RunEvent::ExitRequested {
             code: None, api, ..
         } => {

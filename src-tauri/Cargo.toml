@@ -26,6 +26,8 @@ usage-core = { path = "../crates/usage-core" }
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-app-kit = "0.3"
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["CFNumber"] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["CGGeometry", "CGWindow", "CGWindowLevel"] }
 objc2-foundation = "0.3"
 objc2-service-management = "0.3"
 sha2 = "0.10"
