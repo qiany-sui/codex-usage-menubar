@@ -105,6 +105,8 @@ impl Desktop {
 
     fn exit(&self) {
         if !self.quitting.swap(true, Ordering::AcqRel) {
+            #[cfg(target_os = "windows")]
+            let _ = crate::windows::companion::mark_quitting();
             let _ = self.requests.send(Request::Quit);
         }
     }
@@ -251,10 +253,14 @@ fn show_window(app: &AppHandle, refresh: bool, click: Option<(PhysicalPosition<f
 }
 
 pub fn run() -> Result<()> {
+    #[cfg(target_os = "windows")]
+    let quit = Arc::new(crate::windows::companion::QuitEvent::for_app()?);
     #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
     let mut app = tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
-            show_window(app, true, None)
+        .plugin(tauri_plugin_single_instance::init(|app, args, _| {
+            if !args.iter().any(|arg| arg == "--companion") {
+                show_window(app, true, None);
+            }
         }))
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
@@ -266,7 +272,7 @@ pub fn run() -> Result<()> {
             hide_usage,
             resize_usage_panel
         ])
-        .setup(|app| {
+        .setup(move |app| {
             let app_handle = app.handle();
             let root = data_directory(app_handle)?;
             let profile = app.path().home_dir()?;
@@ -283,6 +289,32 @@ pub fn run() -> Result<()> {
                 choosing_home: AtomicBool::new(false),
             });
             app.manage(desktop.clone());
+
+            #[cfg(target_os = "windows")]
+            {
+                app.manage(quit.clone());
+                let companion_desktop = desktop.clone();
+                std::thread::Builder::new()
+                    .name("companion-exit".into())
+                    .spawn(move || {
+                        while !companion_desktop.quitting.load(Ordering::Acquire) {
+                            match quit.wait(Duration::from_secs(1)) {
+                                Ok(true) => {
+                                    companion_desktop.exit();
+                                    break;
+                                }
+                                Ok(false) => (),
+                                Err(error) => {
+                                    eprintln!("Companion exit listener failed: {error:#}");
+                                    break;
+                                }
+                            }
+                        }
+                    })?;
+                if let Err(error) = crate::windows::companion::ensure_watcher() {
+                    eprintln!("Could not start Codex companion watcher: {error:#}");
+                }
+            }
 
             let open = MenuItem::with_id(app, "open", "打开 Codex Usage", true, None::<&str>)?;
             let refresh = MenuItem::with_id(app, "refresh", "刷新", true, None::<&str>)?;

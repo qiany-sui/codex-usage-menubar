@@ -33,7 +33,15 @@ cargo test --locked -p usage-core
 .\Windows\Package.ps1
 ```
 
-安装程序位于 `target/x86_64-pc-windows-msvc/release/bundle/nsis/`。Windows 版从开始菜单或托盘手动启动。
+安装程序位于 `target/x86_64-pc-windows-msvc/release/bundle/nsis/`。
+
+### Windows 下跟随 Codex 自动启停
+
+安装程序会为当前用户注册并启动后台助手，之后每次登录 Windows 自动运行。助手和主程序均按当前用户的普通权限运行。Codex 桌面应用启动时，助手会静默打开用量托盘；Codex 主进程退出后，助手会通知用量应用正常退出并保存数据库。只关闭窗口但主进程仍在时会继续运行。
+
+Codex 运行期间手动退出 Codex Usage 后，本次会话不会再次自动拉起；下次启动 Codex 才会自动打开。也可以随时从开始菜单手动打开。若在 Windows 的“启动应用”中禁用了 `Codex Usage Watcher`，登录后需手动打开一次 Codex Usage 才能恢复本次登录的跟随功能。
+
+助手按官方 Windows 安装包的应用身份和主进程识别 Codex，不会把 Codex CLI、额度查询进程或 ChatGPT 应用当成 Codex。它不读取窗口、命令行参数、任务或对话内容；Codex 退出后仅保留等待下次启动的助手，不再采集用量。升级时会停止旧助手，卸载时会移除本应用的登录项。
 
 ## macOS 下跟随 Codex 自动启停
 
@@ -94,7 +102,7 @@ rtk proxy node --check ui/app.js
 
 macOS 上改动后台助手时，用 `rtk cargo test --locked --workspace --features codex-usage/macos-watcher` 一并运行助手测试。
 
-Rust 测试使用 `crates/usage-core/tests/fixtures/` 中的 JSONL 会话样例验证日志续读和去重，并验证旧版 Swift 写出的 SQLite v3 数据、早期库升级、事务回滚和额度周期。Windows CI 在 x64 上执行 Core 测试、构建 NSIS 安装包，并检查打包前的应用能启动。
+Rust 测试使用 `crates/usage-core/tests/fixtures/` 中的 JSONL 会话样例验证日志续读和去重，并验证旧版 Swift 写出的 SQLite v3 数据、早期库升级、事务回滚和额度周期。Windows CI 在 x64 上执行 workspace 测试、构建 NSIS 安装包，并检查应用启动、后台助手单实例和正常退出。
 
 ## 数据来源与隐私边界
 

@@ -2,6 +2,8 @@
 #[path = "macos/bundle.rs"]
 mod bundle;
 #[cfg(target_os = "macos")]
+mod companion;
+#[cfg(target_os = "macos")]
 #[path = "macos/watcher.rs"]
 mod watcher;
 

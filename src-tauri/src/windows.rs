@@ -1,3 +1,5 @@
+pub mod companion;
+
 use anyhow::{Result, ensure};
 use std::ptr::null_mut;
 use tauri::image::Image;
