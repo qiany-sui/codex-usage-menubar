@@ -151,6 +151,7 @@ main { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
 
 .overview-scroll { min-height: 0; overflow: auto; scrollbar-width: thin; padding-block: 1px; }
+.overview-scroll:has(.models) { flex: 1; }
 .card { border-radius: 12px; background: var(--surface); }
 :root:not([data-style="orbit"]) .card {
   background: linear-gradient(135deg, color-mix(in srgb, var(--tint) 8%, transparent), transparent), var(--surface);
@@ -207,14 +208,31 @@ main { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 .metric + .metric { padding-left: 12px; border-left: 1px solid var(--border); }
 :root[data-style="orbit"] .metric span { color: var(--muted); }
 :root[data-style="orbit"] .metric strong { font-size: 13px; }
-.models { margin-top: 5px; border-top: 1px solid var(--border); }
+.models { margin-top: 3px; }
 .models summary, .model-list summary { display: flex; align-items: center; gap: 8px; min-height: 24px; }
-.models > summary { justify-content: space-between; font-weight: 600; font-size: 11px; }
+.models > summary {
+  justify-content: space-between;
+  padding-inline-end: 8px;
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+.models > summary:hover { background: transparent; color: var(--accent); }
+.models > summary:hover .chevron { border-color: currentColor; }
 .model-list details { border-top: 1px solid var(--border); padding: 0 5px; }
 .model-list details[open] { background: color-mix(in srgb, var(--tint) 30%, transparent); border-radius: 6px; }
 .model-list summary span { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .model-list .metrics { margin: 0 0 5px; border: 0; }
 .model-list .metric strong { font-size: 12px; }
+.models .model-list { border-radius: 7px; background: color-mix(in srgb, var(--muted) 5%, transparent); }
+.models .model-list details { padding: 0; border: 0; }
+.models .model-list summary { padding-inline: 8px; border-radius: 6px; }
+.models .model-list summary strong { font-variant-numeric: tabular-nums; }
+.models .model-list details + details { box-shadow: inset 0 1px color-mix(in srgb, var(--border) 55%, transparent); }
+.models .model-list summary:hover { background-color: color-mix(in srgb, var(--muted) 9%, transparent); }
+.models .model-list details[open] { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.models .model-list .metrics { margin: 0; padding: 0 8px 6px; }
 .chevron { display: inline-block; flex: 0 0 6px; width: 6px; height: 6px; border: solid var(--muted); border-width: 1px 1px 0 0; transform: rotate(45deg); }
 details[open] > summary > .chevron { transform: rotate(135deg); }
 
