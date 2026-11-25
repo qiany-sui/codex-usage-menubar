@@ -19,11 +19,11 @@ rtk proxy env APPLE_SIGNING_IDENTITY=- npm run tauri -- build --ci --bundles app
 
 本机签名产物位于 `target/release/bundle/macos/Codex Usage.app`。调试可以运行 `rtk npm run tauri -- dev`。升级本机应用时，按 [AGENTS.md](AGENTS.md) 执行备份、安装和启动台核验。
 
-## Windows 11
+## Windows 11 x64
 
-支持 x64 和 ARM64。运行对应架构的 `*-setup.exe`，安装后可通过开始菜单和任务栏右下角的托盘打开应用。Windows 需要 WebView2。系统缺少运行时时，安装程序会尝试安装。
+运行 x64 安装程序 `*-setup.exe`，安装后可通过开始菜单和任务栏右下角的托盘打开应用。Windows 需要 WebView2。系统缺少运行时时，安装程序会尝试安装。
 
-在 GitHub Actions 的 **Desktop build** 中下载产物，或在安装 [Tauri Windows 构建依赖](https://v2.tauri.app/start/prerequisites/#windows)的 Windows 电脑上运行：
+在 GitHub Actions 的 **Desktop build** 中下载 `Codex-Usage-windows-x64`，或在安装 [Tauri Windows 构建依赖](https://v2.tauri.app/start/prerequisites/#windows)的 Windows x64 电脑上运行：
 
 ```powershell
 npm ci
@@ -31,7 +31,7 @@ cargo test --locked -p usage-core
 .\Windows\Package.ps1
 ```
 
-安装程序位于 `target/<Windows Rust 目标>/release/bundle/nsis/`。Windows 版从开始菜单或托盘手动启动。
+安装程序位于 `target/x86_64-pc-windows-msvc/release/bundle/nsis/`。Windows 版从开始菜单或托盘手动启动。
 
 ## macOS 下跟随 Codex 自动启停
 
@@ -92,7 +92,7 @@ rtk proxy node --check ui/app.js
 
 macOS 上改动后台助手时，用 `rtk cargo test --locked --workspace --features codex-usage/macos-watcher` 一并运行助手测试。
 
-Rust 测试复用原有 JSONL fixture，并验证由 Swift SQLite 存储写出的 v3 数据、早期库升级、事务回滚、日志续读和额度周期。Windows CI 对两个架构执行 Core 测试、构建 NSIS 安装包并检查打包前的应用能启动。
+Rust 测试复用原有 JSONL fixture，并验证由 Swift SQLite 存储写出的 v3 数据、早期库升级、事务回滚、日志续读和额度周期。Windows CI 在 x64 上执行 Core 测试、构建 NSIS 安装包，并检查打包前的应用能启动。
 
 ## 数据来源与隐私边界
 

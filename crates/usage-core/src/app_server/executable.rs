@@ -52,18 +52,13 @@ pub(super) fn find_executable() -> Option<PathBuf> {
     if let Some(executable) = explicit.filter(|path| is_windows_executable(path)) {
         return Some(executable);
     }
-    let (architecture, triple) = if cfg!(target_arch = "aarch64") {
-        ("arm64", "aarch64-pc-windows-msvc")
-    } else {
-        ("x64", "x86_64-pc-windows-msvc")
-    };
     let npm = env::var_os("APPDATA")
         .and_then(absolute_path)
         .map(|path| path.join("npm"));
     path_directories()
         .into_iter()
         .chain(npm)
-        .find_map(|directory| windows_executable_in(&directory, architecture, triple))
+        .find_map(|directory| windows_executable_in(&directory))
         .or_else(|| {
             env::var_os("LOCALAPPDATA")
                 .and_then(absolute_path)
@@ -73,16 +68,12 @@ pub(super) fn find_executable() -> Option<PathBuf> {
 }
 
 #[cfg(any(windows, test))]
-pub(super) fn windows_executable_in(
-    directory: &Path,
-    architecture: &str,
-    triple: &str,
-) -> Option<PathBuf> {
+pub(super) fn windows_executable_in(directory: &Path) -> Option<PathBuf> {
     let package = directory.join("node_modules/@openai/codex");
-    let alias = format!("node_modules/@openai/codex-win32-{architecture}");
-    let vendor_roots = [package.join(&alias), directory.join(alias), package];
+    let alias = "node_modules/@openai/codex-win32-x64";
+    let vendor_roots = [package.join(alias), directory.join(alias), package];
     let native = vendor_roots.into_iter().flat_map(|root| {
-        let vendor = root.join("vendor").join(triple);
+        let vendor = root.join("vendor/x86_64-pc-windows-msvc");
         [vendor.join("bin/codex.exe"), vendor.join("codex/codex.exe")]
     });
     std::iter::once(directory.join("codex.exe"))

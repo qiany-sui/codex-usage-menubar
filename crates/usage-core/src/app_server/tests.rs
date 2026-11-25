@@ -94,20 +94,10 @@ fn finds_npm_native_executable_without_using_windows_command_shims() -> Result<(
     let native = temp.path().join(
         "node_modules/@openai/codex/node_modules/@openai/codex-win32-x64/vendor/x86_64-pc-windows-msvc/bin/codex.exe",
     );
-    assert_eq!(
-        windows_executable_in(temp.path(), "x64", "x86_64-pc-windows-msvc"),
-        None
-    );
+    assert_eq!(windows_executable_in(temp.path()), None);
     std::fs::create_dir_all(native.parent().unwrap())?;
     std::fs::write(&native, "")?;
-    assert_eq!(
-        windows_executable_in(temp.path(), "x64", "x86_64-pc-windows-msvc"),
-        Some(native)
-    );
-    assert_eq!(
-        windows_executable_in(temp.path(), "arm64", "aarch64-pc-windows-msvc"),
-        None
-    );
+    assert_eq!(windows_executable_in(temp.path()), Some(native));
     Ok(())
 }
 

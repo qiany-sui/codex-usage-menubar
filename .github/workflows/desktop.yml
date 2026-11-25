@@ -11,19 +11,9 @@ permissions:
 
 jobs:
   windows:
-    name: Windows ${{ matrix.arch }}
-    runs-on: ${{ matrix.runner }}
+    name: Windows x64
+    runs-on: windows-2025
     timeout-minutes: 35
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: windows-2025
-            arch: x64
-            target: x86_64-pc-windows-msvc
-          - runner: windows-11-arm
-            arch: arm64
-            target: aarch64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -32,17 +22,17 @@ jobs:
           cache: npm
       - run: rustup update stable --no-self-update
       - run: rustup default stable
-      - run: rustup target add ${{ matrix.target }}
+      - run: rustup target add x86_64-pc-windows-msvc
       - run: npm ci
       - run: cargo test --locked -p usage-core
       - shell: pwsh
-        run: ./Windows/Package.ps1 -Architecture ${{ matrix.arch }}
+        run: ./Windows/Package.ps1
       - shell: pwsh
-        run: ./Windows/Test-Package.ps1 -Executable './target/${{ matrix.target }}/release/Codex Usage.exe'
+        run: ./Windows/Test-Package.ps1 -Executable './target/x86_64-pc-windows-msvc/release/Codex Usage.exe'
       - uses: actions/upload-artifact@v4
         with:
-          name: Codex-Usage-windows-${{ matrix.arch }}
-          path: target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe
+          name: Codex-Usage-windows-x64
+          path: target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe
           if-no-files-found: error
 
   macos:
