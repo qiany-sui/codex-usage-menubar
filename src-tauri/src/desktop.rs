@@ -212,7 +212,8 @@ fn show_window(app: &AppHandle, refresh: bool) {
 }
 
 pub fn run() -> Result<()> {
-    let app = tauri::Builder::default()
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+    let mut app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             show_window(app, true)
         }))
@@ -227,9 +228,6 @@ pub fn run() -> Result<()> {
             resize_usage_panel
         ])
         .setup(|app| {
-            #[cfg(target_os = "macos")]
-            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
-
             let app_handle = app.handle();
             let root = data_directory(app_handle)?;
             let profile = app.path().home_dir()?;
@@ -321,6 +319,10 @@ pub fn run() -> Result<()> {
             _ => (),
         })
         .build(tauri::generate_context!())?;
+
+    // 在事件循环启动前设置，否则 macOS 会先把应用加入程序坞。
+    #[cfg(target_os = "macos")]
+    app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
     app.run(|app, event| match event {
         #[cfg(target_os = "macos")]
