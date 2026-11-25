@@ -23,7 +23,7 @@ rtk proxy env APPLE_SIGNING_IDENTITY=- npm run tauri -- build --ci --bundles app
 
 运行 x64 安装程序 `*-setup.exe`，安装后可通过开始菜单和任务栏右下角的托盘打开应用。Windows 需要 WebView2。系统缺少运行时时，安装程序会尝试安装。
 
-Windows 托盘直接显示周额度剩余的整数百分比，例如 `62` 表示剩余 `62%`；悬停可查看完整说明。尚未取得额度时显示应用图标。
+Windows 托盘直接显示周额度剩余的整数百分比，例如 `62` 表示剩余 `62%`；悬停可查看完整说明。数字采用透明背景，并跟随任务栏深浅色变化。尚未取得额度时显示应用图标。
 
 在 GitHub Actions 的 **Desktop build** 中下载 `Codex-Usage-windows-x64`，或在安装 [Tauri Windows 构建依赖](https://v2.tauri.app/start/prerequisites/#windows)的 Windows x64 电脑上运行：
 

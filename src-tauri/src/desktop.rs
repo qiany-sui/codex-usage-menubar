@@ -49,6 +49,11 @@ impl Desktop {
         if let Ok(mut latest) = self.view.write() {
             *latest = view.clone();
         }
+        self.update_tray(app, &view);
+        let _ = app.emit(EVENT, view);
+    }
+
+    fn update_tray(&self, app: &AppHandle, view: &ViewState) {
         if let Some(tray) = app.tray_by_id(TRAY) {
             let quota = view
                 .snapshot
@@ -77,12 +82,13 @@ impl Desktop {
                 // Windows 托盘不支持标题，把与悬停提示相同的数字绘制到图标里。
                 let icon = remaining
                     .as_deref()
-                    .and_then(|value| crate::windows::quota_icon(value).ok())
+                    .and_then(|value| {
+                        crate::windows::quota_icon(value, crate::windows::light_taskbar()).ok()
+                    })
                     .or_else(|| app.default_window_icon().cloned());
                 let _ = tray.set_icon(icon);
             }
         }
-        let _ = app.emit(EVENT, view);
     }
 
     fn show_error(&self, app: &AppHandle, message: &str) {
@@ -387,6 +393,8 @@ fn worker(
     let mut watcher: Option<RecommendedWatcher> = None;
     let mut pending = Some(Request::Refresh(RefreshReason::Startup));
     let mut last_tick = Instant::now();
+    #[cfg(target_os = "windows")]
+    let mut light_taskbar = crate::windows::light_taskbar();
     loop {
         let before_wait = now();
         let request = pending
@@ -398,6 +406,18 @@ fn worker(
             }
             app.exit(0);
             return;
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            // 单独切换 Windows 模式未必触发窗口主题事件，复用现有轮询更新托盘。
+            let current_theme = crate::windows::light_taskbar();
+            if current_theme != light_taskbar {
+                light_taskbar = current_theme;
+                if let Ok(view) = desktop.view.read() {
+                    desktop.update_tray(&app, &view);
+                }
+            }
         }
 
         let clock = now();
