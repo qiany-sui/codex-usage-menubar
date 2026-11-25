@@ -92,7 +92,7 @@ rtk proxy node --check ui/app.js
 
 macOS 上改动后台助手时，用 `rtk cargo test --locked --workspace --features codex-usage/macos-watcher` 一并运行助手测试。
 
-Rust 测试复用原有 JSONL fixture，并验证由 Swift SQLite 存储写出的 v3 数据、早期库升级、事务回滚、日志续读和额度周期。Windows CI 在 x64 上执行 Core 测试、构建 NSIS 安装包，并检查打包前的应用能启动。
+Rust 测试使用 `crates/usage-core/tests/fixtures/` 中的 JSONL 会话样例验证日志续读和去重，并验证旧版 Swift 写出的 SQLite v3 数据、早期库升级、事务回滚和额度周期。Windows CI 在 x64 上执行 Core 测试、构建 NSIS 安装包，并检查打包前的应用能启动。
 
 ## 数据来源与隐私边界
 
@@ -111,7 +111,6 @@ crates/usage-core/   # Rust 统计、数据库、日志和 Codex app-server
 src-tauri/          # 桌面应用、托盘、目录对话框和系统集成
 ui/                 # macOS 和 Windows 共用的界面
 Windows/            # Windows 构建和启动测试
-App/ Sources/ Tests/ # Swift 旧版及统计兼容性基准
 ```
 
 ## License

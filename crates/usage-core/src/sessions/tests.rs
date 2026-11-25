@@ -2,8 +2,7 @@ use super::*;
 use chrono::Utc;
 use std::io::Write;
 
-const SESSION: &[u8] =
-    include_bytes!("../../../../Tests/UsageCoreTests/Fixtures/session-repeated-token-count.jsonl");
+const SESSION: &[u8] = include_bytes!("../../tests/fixtures/session-repeated-token-count.jsonl");
 
 #[test]
 fn compatible_digest_and_fractional_timestamp() {

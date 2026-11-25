@@ -11,7 +11,6 @@
 - 修改 Rust 统计、存储或系统接入时，运行 `rtk cargo test --locked -p usage-core`，并复用现有 Swift 兼容性测试数据。
 - 修改桌面应用或共享界面时，运行 `rtk cargo test --locked --workspace` 和 `rtk proxy node --check ui/app.js`，构建并打开受影响的页面。
 - Windows 仅支持 x64。原生测试和打包由 `.github/workflows/desktop.yml` 在 Windows x64 上执行，实机验收由 Nc 在 Windows 电脑上完成。
-- 旧 Swift 实现用于兼容性比对。修改旧 Core 时用 `rtk swift test`，修改旧 App 或 Watcher 时按 Xcode 工程的测试配置验证。
 
 ## 本机应用交付
 
