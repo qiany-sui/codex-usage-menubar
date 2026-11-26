@@ -221,6 +221,13 @@ fn position_panel(window: &WebviewWindow, rect: Rect) {
 }
 
 fn show_window(app: &AppHandle, refresh: bool, click: Option<(PhysicalPosition<f64>, Rect)>) {
+    #[cfg(target_os = "windows")]
+    if app
+        .try_state::<Arc<Desktop>>()
+        .is_some_and(|desktop| desktop.quitting.load(Ordering::Acquire))
+    {
+        return;
+    }
     if let Some(window) = app.get_webview_window(WINDOW) {
         let focused_click = click.is_some() && window.is_focused().unwrap_or(false);
         #[cfg(target_os = "macos")]
@@ -294,6 +301,7 @@ pub fn run() -> Result<()> {
             {
                 app.manage(quit.clone());
                 let companion_desktop = desktop.clone();
+                let companion_app = app_handle.clone();
                 std::thread::Builder::new()
                     .name("companion-exit".into())
                     .spawn(move || {
@@ -301,6 +309,18 @@ pub fn run() -> Result<()> {
                             match quit.wait(Duration::from_secs(1)) {
                                 Ok(true) => {
                                     companion_desktop.exit();
+                                    // 最后一次额度读取可能等待数秒，先收起界面，让后台完成保存。
+                                    let closing_app = companion_app.clone();
+                                    if let Err(error) = companion_app.run_on_main_thread(move || {
+                                        if let Some(tray) = closing_app.tray_by_id(TRAY) {
+                                            let _ = tray.set_visible(false);
+                                        }
+                                        if let Some(window) = closing_app.get_webview_window(WINDOW) {
+                                            let _ = window.hide();
+                                        }
+                                    }) {
+                                        eprintln!("Could not hide exiting companion: {error:#}");
+                                    }
                                     break;
                                 }
                                 Ok(false) => (),
